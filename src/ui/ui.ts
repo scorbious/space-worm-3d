@@ -11,12 +11,13 @@ import type { FeedItem, Game, HudState, LifeResult, MatchResult, ThreatArrow } f
 import { glyphSvg, type GlyphId } from '../game/glyphs'
 import type { HintId } from '../game/threats'
 import { formatClock, type Mode, type Records } from '../game/rules'
+import type { LobbyState, MultiplayerStatus, PlayerSeat } from '../net/multiplayer'
 import { icon } from './icons'
 import { Minimap } from './minimap'
 import { Sparks } from './sparks'
 import { assets } from '../engine/assets'
 
-export type Screen = 'boot' | 'loading' | 'title' | 'hud' | 'pause' | 'settings' | 'skins' | 'records' | 'howto' | 'death' | 'match'
+export type Screen = 'boot' | 'loading' | 'title' | 'hud' | 'pause' | 'settings' | 'skins' | 'records' | 'howto' | 'death' | 'match' | 'multiplayer'
 
 export type UiActions = {
   play(mode: Mode): void
@@ -29,6 +30,7 @@ export type UiActions = {
   equipSkin(id: string): void
   /** Forget which first-encounter hazard hints were shown. */
   resetHints(): void
+  multiplayer(action: string, value?: string): void
 }
 /** Glyph shown for each threat hint / legend row / death cause. */
 const THREAT_GLYPH: Record<string, GlyphId> = { asteroid: 'skull', gate: 'bolt', well: 'spiral', rim: 'rim', rival: 'jaw', worm: 'jaw', head: 'jaw', self: 'jaw', ally: 'shield', edible: 'star', bite: 'bite' }
@@ -63,6 +65,11 @@ export class Ui {
   private lastHover: Element | null = null
   private lastLen = 0
   private lastLenBump = 0
+  private lobbyState: LobbyState | null = null
+  private lobbyStatus: MultiplayerStatus = 'idle'
+  private lobbyDetail = ''
+  private lobbyTeam: 'blue' | 'red' | 'spectator' = 'blue'
+  private lobbyHost = false
   private lastCombo = 0
   private loadingChoice: ((v: 'play' | 'cancel') => void) | null = null
   reduced = false
@@ -112,6 +119,7 @@ export class Ui {
         <div class="title-wrap">
           ${logo('big')}
           <p class="tagline">${T('title.tagline')}</p>
+          <p class="title-credit" data-i18n="multiplayer.credit"></p>
           <div class="title-row">
             <label class="name-field"><span data-i18n="title.name"></span><input id="pilot-name" maxlength="16" autocomplete="off" spellcheck="false" /></label>
             <div class="wallet">${icon('stardust')}<b data-bind="stardust">0</b></div>
@@ -120,6 +128,7 @@ export class Ui {
             <button class="mode-card ffa" data-action="play-ffa">${icon('play')}<strong>${T('title.ffa')}</strong><small>${T('title.ffaDesc')}</small></button>
             <button class="mode-card team" data-action="play-team">${icon('team')}<strong>${T('title.team')}</strong><small>${T('title.teamDesc')}</small></button>
           </div>
+          <button class="btn multiplayer-cta" data-action="multiplayer">${icon('team')}${T('title.multiplayer')}</button>
           <div class="title-links">
             ${btn('skins', 'title.skins', 'ghost', 'palette')}
             ${btn('records', 'title.records', 'ghost', 'trophy')}
@@ -197,6 +206,10 @@ export class Ui {
 
       <section class="screen menu" data-screen="match">
         <div class="panel card match" data-bind="match"></div>
+      </section>
+
+      <section class="screen menu" data-screen="multiplayer">
+        <div class="panel card wide multiplayer-card" data-bind="multiplayer"></div>
       </section>
 
       <section class="screen menu" data-screen="skins">
@@ -308,6 +321,20 @@ export class Ui {
     switch (action) {
       case 'play-ffa': return this.actions.play('ffa')
       case 'play-team': return this.actions.play('team')
+      case 'multiplayer':
+        this.actions.multiplayer('open')
+        return
+      case 'mp-create-blue':
+      case 'mp-create-red':
+      case 'mp-join-blue':
+      case 'mp-join-red':
+      case 'mp-ready':
+      case 'mp-start':
+      case 'mp-copy-blue':
+      case 'mp-copy-red':
+      case 'mp-leave':
+        this.actions.multiplayer(action.slice(3), el.dataset.team)
+        return
       case 'respawn': return this.actions.respawn()
       case 'again': return this.actions.play(el.dataset.mode === 'team' ? 'team' : 'ffa')
       case 'resume': return this.actions.resume()
@@ -342,6 +369,10 @@ export class Ui {
   back(): boolean {
     if (this.screen === 'settings') this.show(this.settingsReturn)
     else if (this.screen === 'skins' || this.screen === 'records' || this.screen === 'howto') this.show(this.subReturn)
+    else if (this.screen === 'multiplayer') {
+      this.actions.multiplayer('leave')
+      this.show('title')
+    }
     else return false
     return true
   }
@@ -432,8 +463,10 @@ export class Ui {
     if (this.screen === 'skins') this.renderSkins()
     if (this.screen === 'records') this.renderRecords()
     if (this.screen === 'howto') this.renderHowto()
+    if (this.screen === 'multiplayer') this.renderMultiplayer()
     if (this.screen === 'death' && this.lastDeath) this.renderDeath()
     if (this.screen === 'match' && this.lastMatch) this.renderMatch()
+    if (this.screen === 'multiplayer') this.renderMultiplayer()
   }
 
   private renderSkins(): void {
@@ -498,6 +531,68 @@ export class Ui {
       <section><h3>${t('howto.feast')}</h3><p>${t('howto.feastText')}</p></section>
       <section><h3>${t('howto.team')}</h3><p>${t('howto.teamText')}</p></section>
       <footer><button class="btn ghost" data-action="back">${t('common.back')}</button></footer>`
+  }
+
+  setMultiplayerStatus(status: MultiplayerStatus, detail = ''): void {
+    this.lobbyStatus = status
+    this.lobbyDetail = detail
+    if (this.screen === 'multiplayer') this.renderMultiplayer()
+  }
+
+  setMultiplayerWelcome(team: 'blue' | 'red' | 'spectator', host: boolean): void {
+    this.lobbyTeam = team
+    this.lobbyHost = host
+    if (this.screen === 'multiplayer') this.renderMultiplayer()
+  }
+
+  setMultiplayerState(state: LobbyState): void {
+    this.lobbyState = state
+    if (this.screen === 'multiplayer') this.renderMultiplayer()
+  }
+
+  private renderMultiplayer(): void {
+    const el = this.root.querySelector<HTMLElement>('[data-bind="multiplayer"]')
+    if (!el) return
+    const statusText = this.lobbyStatus === 'connected' ? this.t('multiplayer.connected')
+      : this.lobbyStatus === 'connecting' ? this.t('multiplayer.connecting')
+        : this.lobbyStatus === 'loading' ? this.t('multiplayer.loading')
+          : this.lobbyStatus === 'unavailable' ? this.t('multiplayer.unavailable')
+            : this.lobbyStatus === 'error' ? this.t('multiplayer.error') : this.t('multiplayer.idle')
+    const s = this.lobbyState
+    const seat = (player: PlayerSeat | null) => player
+      ? `<li class="seat ${player.connected ? 'online' : 'offline'}"><b>${esc(player.name)}</b><span>${player.ready ? this.t('multiplayer.ready') : this.t('multiplayer.notReady')}</span></li>`
+      : `<li class="seat empty">${this.t('multiplayer.openSeat')}</li>`
+    const teamCard = (team: 'blue' | 'red', label: string) => {
+      const players = s?.teams[team] ?? [null, null, null]
+      return `<article class="team-lobby ${team}"><header><h3>${label}</h3><b>${players.filter(Boolean).length}/3</b></header><ol>${players.map(player => seat(player)).join('')}</ol>${s ? `<button class="btn ghost small" data-action="mp-copy-${team}">${this.t('multiplayer.copyInvite')}</button><code class="invite-code">${esc(this.lobbyRoomLink(team))}</code>` : ''}</article>`
+    }
+    const hasRoom = Boolean(s)
+    const roomCode = s?.room ?? ''
+    el.innerHTML = `
+      <header class="lobby-head"><div><p class="eyebrow">${this.t('multiplayer.eyebrow')}</p><h2>${this.t('multiplayer.title')}</h2></div>${roomCode ? `<span class="room-code">${esc(roomCode)}</span>` : ''}</header>
+      <p class="lobby-status ${this.lobbyStatus}">${statusText}${this.lobbyDetail ? ` · ${esc(this.lobbyDetail)}` : ''}</p>
+      ${hasRoom ? `<p class="lobby-instruction">${this.t(s?.phase === 'running' ? 'multiplayer.running' : 'multiplayer.inviteHint')}</p>
+        <div class="team-lobby-grid">${teamCard('blue', this.t('hud.team.blue'))}${teamCard('red', this.t('hud.team.orange'))}</div>
+        <div class="lobby-actions">
+          ${s?.phase === 'waiting' && this.lobbyTeam !== 'spectator' ? `<button class="btn primary" data-action="mp-ready">${this.t('multiplayer.readyUp')}</button>` : ''}
+          ${s?.phase === 'waiting' && this.lobbyHost ? `<button class="btn primary" data-action="mp-start" ${s.readyToStart ? '' : 'disabled'}>${this.t('multiplayer.start')}</button>` : ''}
+          <button class="btn ghost" data-action="mp-leave">${this.t('multiplayer.leave')}</button>
+        </div>`
+        : `<p class="lobby-instruction">${this.t('multiplayer.description')}</p>
+          <div class="lobby-create"><button class="btn primary" data-action="mp-create-blue">${this.t('multiplayer.createBlue')}</button><button class="btn primary red" data-action="mp-create-red">${this.t('multiplayer.createRed')}</button></div>
+          <div class="lobby-join"><label>${this.t('multiplayer.roomLabel')}<input data-mp-room maxlength="8" autocomplete="off" placeholder="ABC123" /></label><div><button class="btn ghost" data-action="mp-join-blue">${this.t('multiplayer.joinBlue')}</button><button class="btn ghost" data-action="mp-join-red">${this.t('multiplayer.joinRed')}</button></div></div>`}
+      <p class="lobby-foot">${this.t('multiplayer.credit')}</p>
+      <footer><button class="btn ghost" data-action="back">${this.t('common.back')}</button></footer>`
+  }
+
+  private lobbyRoomLink(team: 'blue' | 'red'): string {
+    const room = this.lobbyState?.room
+    if (!room) return ''
+    const url = new URL(location.href)
+    url.search = ''
+    url.searchParams.set('match', room)
+    url.searchParams.set('team', team)
+    return url.toString()
   }
 
   // ─── death & match ──────────────────────────────────────────────────────
