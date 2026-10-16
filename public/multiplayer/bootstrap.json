@@ -1,0 +1,5 @@
+{
+  "build": "spaceworm-3v3-v1",
+  "signalingUrl": "",
+  "iceTransportPolicy": "all"
+}

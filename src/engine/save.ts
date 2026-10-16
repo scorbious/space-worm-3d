@@ -5,8 +5,8 @@
 import { SKINS } from '../game/content'
 import { emptyRecords, LOCAL_BOARD_SIZE, type LifeEntry, type Records } from '../game/rules'
 
-export type Locale = 'en' | 'zh-CN'
-export const LOCALES: Locale[] = ['en', 'zh-CN']
+export type Locale = 'en' | 'ar'
+export const LOCALES: Locale[] = ['en', 'ar']
 export type Quality = 'low' | 'medium' | 'high'
 /** Threat Language detail: full = badges, reticle, edge arrows; minimal = ground marks and colours only. */
 export type ThreatDetail = 'full' | 'minimal'
@@ -101,7 +101,7 @@ export function parseSave(raw: string | null): SaveData {
   const skin = typeof data.skin === 'string' && owned.includes(data.skin) ? data.skin : 'nebula'
   return {
     version: 1,
-    locale: data.locale === 'en' || data.locale === 'zh-CN' ? data.locale : '',
+    locale: data.locale === 'en' || data.locale === 'ar' ? data.locale : '',
     musicVolume: clamp01(data.musicVolume, base.musicVolume),
     sfxVolume: clamp01(data.sfxVolume, base.sfxVolume),
     muted: data.muted === true,

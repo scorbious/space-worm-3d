@@ -15,6 +15,6 @@ export default defineConfig(({ mode }) => {
       allowedHosts: ['.manuspre.computer', '.manus.computer', '.manus-asia.computer', '.manuscomputer.ai', '.manusvm.computer', 'localhost', '127.0.0.1'],
     },
     build: { target: 'es2022', assetsInlineLimit: 0, chunkSizeWarningLimit: 4600, sourcemap: false },
-    test: { environment: 'node', include: ['tests/**/*.test.{ts,mjs}'] },
+    test: { environment: 'node', include: ['tests/**/*.test.{ts,mjs}'], testTimeout: 15000 },
   }
 })

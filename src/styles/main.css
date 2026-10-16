@@ -1,3 +1,5 @@
+@import './multiplayer.css';
+
 @font-face { font-family: 'Sora'; src: url('/fonts/Sora-VF.subset.woff2') format('woff2'); font-weight: 100 900; font-display: swap; }
 @font-face { font-family: 'Figtree'; src: url('/fonts/Figtree-VF.subset.woff2') format('woff2'); font-weight: 300 900; font-display: swap; }
 
@@ -16,8 +18,8 @@
   --good: #7dffb0;
   --bad: #ff5d7a;
   --radius: 16px;
-  --display: 'Sora', 'Noto Sans SC', system-ui, sans-serif;
-  --body: 'Figtree', 'Noto Sans SC', system-ui, -apple-system, 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  --display: 'Sora', 'Noto Sans Arabic', system-ui, sans-serif;
+  --body: 'Figtree', 'Noto Sans Arabic', system-ui, -apple-system, sans-serif;
   --safe-t: env(safe-area-inset-top, 0px);
   --safe-r: env(safe-area-inset-right, 0px);
   --safe-b: env(safe-area-inset-bottom, 0px);

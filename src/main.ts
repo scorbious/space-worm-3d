@@ -11,6 +11,7 @@ import { applyLife, insertLife, stardustForLife, type Mode } from './game/rules'
 import { tuning } from './game/tuning'
 import { TouchControls } from './ui/touch'
 import { Ui } from './ui/ui'
+import { MultiplayerClient } from './net/multiplayer'
 
 async function boot(): Promise<void> {
   const canvas = document.querySelector<HTMLCanvasElement>('#game')!
@@ -36,6 +37,7 @@ async function boot(): Promise<void> {
     if (uiRef) uiRef.reduced = d.reducedMotion
   }
   let uiRef: Ui | null = null
+  let network: MultiplayerClient | null = null
 
   const unlockAudio = () => {
     audio.unlock()
@@ -116,8 +118,35 @@ async function boot(): Promise<void> {
       save.update({ seenHints: [] })
       game?.seenHints.clear()
     },
+    multiplayer: action => {
+      const profile = () => ({ name: save.data.playerName, skin: save.data.skin })
+      if (!network) return
+      if (action === 'open') {
+        ui.show('multiplayer')
+        network.loadEndpoint().catch(error => ui.setMultiplayerStatus('unavailable', String((error as Error).message)))
+      } else if (action === 'create-blue' || action === 'create-red') {
+        ui.show('multiplayer')
+        void network.create(profile(), action.endsWith('red') ? 'red' : 'blue').catch(error => ui.setMultiplayerStatus('error', String((error as Error).message)))
+      } else if (action === 'join-blue' || action === 'join-red') {
+        const room = document.querySelector<HTMLInputElement>('[data-mp-room]')?.value.trim().toUpperCase() || ''
+        if (!/^[A-Z0-9]{5,8}$/.test(room)) {
+          ui.setMultiplayerStatus('error', 'Enter a valid room code.')
+          return
+        }
+        ui.show('multiplayer')
+        void network.join(room, action.endsWith('red') ? 'red' : 'blue', profile()).catch(error => ui.setMultiplayerStatus('error', String((error as Error).message)))
+      } else if (action === 'ready') network.ready(true)
+      else if (action === 'start') network.start()
+      else if (action === 'copy-blue' || action === 'copy-red') void network.copyInvite(action.endsWith('red') ? 'red' : 'blue').then(() => ui.toast('multiplayer.copied', {}, 'good')).catch(() => ui.setMultiplayerStatus('error', 'Clipboard permission was denied.'))
+      else if (action === 'leave') network.leave()
+    },
   })
   uiRef = ui
+  network = new MultiplayerClient({
+    onWelcome: welcome => ui.setMultiplayerWelcome(welcome.team, welcome.host),
+    onState: state => ui.setMultiplayerState(state),
+    onStatus: (status, detail) => ui.setMultiplayerStatus(status, detail),
+  })
   ui.show('boot')
   applySettings(save.data)
 
@@ -222,6 +251,11 @@ async function boot(): Promise<void> {
   window.setTimeout(() => {
     ui.show('title')
     assets.startBackground()
+    const invite = new URLSearchParams(location.search).get('match')
+    if (invite) {
+      ui.show('multiplayer')
+      if (network) void network.joinFromLocation({ name: save.data.playerName, skin: save.data.skin }).catch(error => ui.setMultiplayerStatus('unavailable', String((error as Error).message)))
+    }
   }, 250)
   // Debug/test hook (read-only use): smoke tests inspect state through it.
   ;(window as unknown as { __game: unknown }).__game = { game: g, ui, input, save, assets, audio }

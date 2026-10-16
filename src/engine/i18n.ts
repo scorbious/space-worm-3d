@@ -1,5 +1,5 @@
 import en from '../i18n/en.json'
-import zh from '../i18n/zh-CN.json'
+import ar from '../i18n/ar.json'
 import type { Locale } from './save'
 
 export type Dictionary = Record<string, string>
@@ -8,17 +8,17 @@ export type Dictionary = Record<string, string>
  * Locale registry. To add a language: create `src/i18n/<code>.json` with every key from en.json,
  * register it here and in `LOCALES` (engine/save.ts), and add its native name as `lang.<code>`.
  */
-const DICTIONARIES: Record<Locale, Dictionary> = { en, 'zh-CN': zh }
+const DICTIONARIES: Record<Locale, Dictionary> = { en, ar }
 
-/** Map a browser locale list to a supported locale: any zh* → Simplified Chinese, else English. */
+/** Map a browser locale list to a supported locale: any ar* → Arabic, else English. */
 export function detectLocale(languages: readonly string[] | undefined): Locale {
   const first = (languages ?? []).find(Boolean) ?? ''
-  return first.toLowerCase().startsWith('zh') ? 'zh-CN' : 'en'
+  return first.toLowerCase().startsWith('ar') ? 'ar' : 'en'
 }
 
 /** A saved player choice always wins over browser detection. */
 export function resolveLocale(saved: Locale | '', languages: readonly string[] | undefined): Locale {
-  return saved === 'en' || saved === 'zh-CN' ? saved : detectLocale(languages)
+  return saved === 'en' || saved === 'ar' ? saved : detectLocale(languages)
 }
 
 export class I18n {
@@ -28,6 +28,7 @@ export class I18n {
   constructor(locale: Locale) {
     this.locale = locale
     document.documentElement.lang = locale
+    document.documentElement.dir = locale === 'ar' ? 'rtl' : 'ltr'
   }
 
   /** Look up `key`, replacing `{name}` placeholders. Missing keys render the key so gaps are visible. */
@@ -49,6 +50,7 @@ export class I18n {
     if (locale === this.locale) return
     this.locale = locale
     document.documentElement.lang = locale
+    document.documentElement.dir = locale === 'ar' ? 'rtl' : 'ltr'
     for (const fn of this.listeners) fn(locale)
   }
 
@@ -58,4 +60,4 @@ export class I18n {
   }
 }
 
-export const DICTIONARY_KEYS = { en: Object.keys(en), zh: Object.keys(zh) }
+export const DICTIONARY_KEYS = { en: Object.keys(en), ar: Object.keys(ar) }

@@ -1,4 +1,4 @@
-# game-3d starter (three.js + Rapier)
+# Space Worm 3D (three.js)
 
 A complete, small 3D game — **Sky Cores**: run, jump and dash across floating islands to collect
 every energy core before the clock runs out, avoiding patrol drones. It exists to be *changed*:
@@ -12,6 +12,8 @@ pnpm test     # unit tests (rules, save, i18n, level)
 pnpm smoke    # after build: headless browser playthrough + screenshots in shots/
 ```
 
+Created by **LordOfShadow**.
+
 ## Layout
 
 | Path | Role | Change it? |
@@ -22,7 +24,7 @@ pnpm smoke    # after build: headless browser playthrough + screenshots in shots
 | `src/engine/renderer.ts` | WebGL renderer, quality presets, bloom | Rarely |
 | `src/engine/audio.ts` | Music/SFX buses, synthesized SFX, `load()` for files | Add sounds |
 | `src/engine/save.ts` | Versioned localStorage save + leaderboard | Add fields + parsing |
-| `src/engine/i18n.ts` | en / zh-CN, browser detection, saved choice wins | Rarely |
+| `src/engine/i18n.ts` | en / ar, browser detection, saved choice wins | Rarely |
 | `src/engine/assets.ts` | Cached GLTF/texture loading with progress | Use it for models |
 | `src/game/config.ts` | Source defaults and active gameplay configuration | Yes |
 | `src/game/tuning.ts` | Tweak catalog, atomic validation and activation boundaries | Yes |
@@ -31,7 +33,7 @@ pnpm smoke    # after build: headless browser playthrough + screenshots in shots
 | `src/game/player.ts` | Character controller + game feel + procedural model | Yes |
 | `src/game/*.ts` | Camera, cores, drones, particles, scene orchestration | Yes |
 | `src/ui/`, `src/styles/main.css` | HTML/CSS title, HUD, pause, settings, results | Yes |
-| `src/i18n/*.json` | All player-facing text (both files, same keys) | Yes |
+| `src/i18n/*.json` | All player-facing text in English and Arabic with matching keys | Yes |
 
 ## Rules for changes
 
@@ -39,9 +41,8 @@ pnpm smoke    # after build: headless browser playthrough + screenshots in shots
   fixed steps; read presses there with `input.consume(action)`, never `pressed()`.
 - **Rules stay pure.** Scoring, win/lose and progression go in `rules.ts` with tests; scene code
   reports events and reads state.
-- **Every visible string is an i18n key** in both `en.json` and `zh-CN.json` (a test enforces
-  matching keys and placeholders). English and Chinese use the bundled Manus CC0 fonts in `public/fonts/`;
-  if you add new Chinese text, check it renders (missing glyphs fall back to system fonts).
+- **Every visible string is an i18n key** in both `en.json` and `ar.json` (a test enforces
+  matching keys and placeholders). Arabic uses the system Arabic fallback when a glyph is not bundled.
 - **UI is HTML/CSS**, not canvas. Keep the game look: display font, outlined text, hard offset
   shadows, skewed buttons, notched panels. Menus must stay keyboard/gamepad navigable
   (`data-nav` on focusable controls).
@@ -55,11 +56,25 @@ Keyboard/mouse: WASD move, mouse look (click to capture), Space jump (hold = hig
 sprint, F or left click dash, Esc pause. Gamepad: left stick, right stick, A jump, X/RB dash,
 LB sprint, Start pause. Touch: left-side stick, right-side drag to look, JUMP / DASH buttons.
 
+## Multiplayer 3 v 3
+
+The game includes a private-room lobby for three blue players versus three orange players. One room
+generates two invitation links, one for each team. The browser client reads
+`public/multiplayer/bootstrap.json` and connects to an authoritative Node.js + `ws` service at
+`wss://.../ws` when configured. GitHub Pages serves the client but does not run a WebSocket service;
+the server must be deployed separately and its exact public origin placed in the bootstrap file.
+
+Run the local service with:
+
+```bash
+pnpm multiplayer:server
+```
+
+Then run the client with `VITE_MULTIPLAYER_URL=ws://127.0.0.1:8787/ws pnpm dev`.
+
 ## Credits
 
-Fonts: ManusCC0 (regular, medium, bold) and ManusCC0 Sans CJK SC — CC0 1.0.
-The bundled Chinese font preserves its 6,547-codepoint repertoire; no font download is required.
-See `public/fonts/ManusCC0-LICENSE.txt`.
+Fonts: ManusCC0 (regular, medium, bold) — CC0 1.0. Arabic glyphs use the platform fallback font.
 Libraries: three.js (MIT), Rapier (Apache-2.0).
 
 ## Preview Tweak

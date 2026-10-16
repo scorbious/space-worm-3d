@@ -108,7 +108,7 @@ export function labelTexture(text: string, color: string, size = 44): THREE.Text
   const key = `${text}|${color}|${size}`
   const cached = labelCache.get(key)
   if (cached) return cached
-  const font = `700 ${size}px Sora, 'Noto Sans SC', system-ui, sans-serif`
+  const font = `700 ${size}px Sora, 'Noto Sans Arabic', system-ui, sans-serif`
   const measure = document.createElement('canvas').getContext('2d')!
   measure.font = font
   const w = Math.ceil(measure.measureText(text).width + size * 0.9)
