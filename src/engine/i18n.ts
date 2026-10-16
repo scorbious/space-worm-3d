@@ -3,6 +3,11 @@ import zh from '../i18n/zh-CN.json'
 import type { Locale } from './save'
 
 export type Dictionary = Record<string, string>
+
+/**
+ * Locale registry. To add a language: create `src/i18n/<code>.json` with every key from en.json,
+ * register it here and in `LOCALES` (engine/save.ts), and add its native name as `lang.<code>`.
+ */
 const DICTIONARIES: Record<Locale, Dictionary> = { en, 'zh-CN': zh }
 
 /** Map a browser locale list to a supported locale: any zh* → Simplified Chinese, else English. */
@@ -29,6 +34,15 @@ export class I18n {
   t(key: string, vars: Record<string, string | number> = {}): string {
     const text = DICTIONARIES[this.locale][key] ?? DICTIONARIES.en[key] ?? key
     return text.replace(/\{(\w+)\}/g, (_, name: string) => String(vars[name] ?? `{${name}}`))
+  }
+
+  has(key: string): boolean {
+    return key in DICTIONARIES.en
+  }
+
+  /** Locale-aware number formatting. */
+  n(value: number): string {
+    return Math.floor(value).toLocaleString(this.locale)
   }
 
   set(locale: Locale): void {

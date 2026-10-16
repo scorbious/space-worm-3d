@@ -37,7 +37,7 @@ export class Renderer {
     this.gl = new THREE.WebGLRenderer({ canvas, antialias: this.preset.antialias, powerPreference: 'high-performance' })
     this.gl.outputColorSpace = THREE.SRGBColorSpace
     this.gl.toneMapping = THREE.ACESFilmicToneMapping
-    this.gl.toneMappingExposure = 1
+    this.gl.toneMappingExposure = 0.9
     this.gl.shadowMap.type = THREE.PCFSoftShadowMap
     this.applyQuality(quality)
     window.addEventListener('resize', () => this.resize())
@@ -66,7 +66,7 @@ export class Renderer {
     const size = this.gl.getSize(new THREE.Vector2())
     this.composer = new EffectComposer(this.gl)
     this.composer.addPass(new RenderPass(scene, camera))
-    this.bloom = new UnrealBloomPass(size, 0.45, 0.3, 1.6)
+    this.bloom = new UnrealBloomPass(size, 0.28, 0.2, 1.2)
     this.composer.addPass(this.bloom)
     this.composer.addPass(new OutputPass())
     this.composer.setSize(size.x, size.y)

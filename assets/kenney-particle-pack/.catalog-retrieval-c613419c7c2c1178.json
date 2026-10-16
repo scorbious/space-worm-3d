@@ -1,0 +1,153 @@
+{
+  "archiveSha256": "b631d4b07f7002549fdcf155f01141ad482f79f3440e4e301eed49ce5f1d8958",
+  "archiveSizeBytes": 15001764,
+  "catalogMetadata": [
+    {
+      "archiveSha256": "b631d4b07f7002549fdcf155f01141ad482f79f3440e4e301eed49ce5f1d8958",
+      "catalogPath": "2d-sprites/environment/kenney-particle-pack/assets.zip",
+      "license": {
+        "attributionRequired": false,
+        "commercialUseAllowed": true,
+        "copyrightNoticeRequired": false,
+        "editableProjectDistributionAllowed": true,
+        "id": "CC0-1.0",
+        "licenseNoticeRequired": false,
+        "modificationNoticeRequired": false,
+        "reusableTemplateDistributionAllowed": true,
+        "url": "https://creativecommons.org/publicdomain/zero/1.0/"
+      },
+      "metadataPath": "2d-sprites/environment/kenney-particle-pack/metadata.json",
+      "metadataSha256": "9d06a62a9091b5f2a1b6b4316433d39758323ec3e32df5c28cdf2bb245bfbc6a",
+      "snapshotId": "catalog-20260924-japan-characters-scene-removal-v1",
+      "source": {
+        "author": "Kenney",
+        "metadataPath": "2d-sprites/environment/kenney-particle-pack/metadata.json",
+        "metadataSha256": "sha256:9d06a62a9091b5f2a1b6b4316433d39758323ec3e32df5c28cdf2bb245bfbc6a",
+        "name": "Particle Pack",
+        "packId": "kenney-particle-pack",
+        "url": "https://kenney.nl/assets/particle-pack"
+      }
+    }
+  ],
+  "catalogSources": [
+    {
+      "catalogPath": "2d-sprites/environment/kenney-particle-pack/assets.zip",
+      "snapshotId": "catalog-20260924-japan-characters-scene-removal-v1"
+    }
+  ],
+  "dependencyCoverage": "glb-gltf-obj-mtl-textureatlas-bmfont-tiled",
+  "limitations": [],
+  "members": [
+    {
+      "member": "License.txt",
+      "sha256": "f9e70b81d8cc07c4e07c9f2eff1d94fd371a06070b18cb67c651c41158ec2975",
+      "sizeBytes": 651
+    },
+    {
+      "member": "PNG (Transparent)/circle_05.png",
+      "sha256": "925b8ac284436f74f9cadf0ecd058da1c08fba65c098e4e34fd220603022f02e",
+      "sizeBytes": 65336
+    },
+    {
+      "member": "PNG (Transparent)/flame_01.png",
+      "sha256": "92a70bcb90b1e21c57b2dae42843135703b2e988abee97433f84c3119723d144",
+      "sizeBytes": 54099
+    },
+    {
+      "member": "PNG (Transparent)/flare_01.png",
+      "sha256": "254f5bd4f0548612bf29305d27899efdee8cb8d8306292761ebbddebd3e57935",
+      "sizeBytes": 42886
+    },
+    {
+      "member": "PNG (Transparent)/light_01.png",
+      "sha256": "caedcc5df5bcac4470244d2520d6a64b45b20c1ccf4d918da516c55e3fa365a6",
+      "sizeBytes": 93470
+    },
+    {
+      "member": "PNG (Transparent)/light_03.png",
+      "sha256": "b68627734d08aab3eaf3f94718521553628c75aace1de6c74de28501c1a4c147",
+      "sizeBytes": 100114
+    },
+    {
+      "member": "PNG (Transparent)/magic_01.png",
+      "sha256": "398479ea280c8161d0b6d509ca97eefb27e989c7832b404abcb65faae3e922ff",
+      "sizeBytes": 81687
+    },
+    {
+      "member": "PNG (Transparent)/magic_03.png",
+      "sha256": "c2ef5fe86cd2fd08e5b9768389ab6580b346c391db3c7c09fc9b0a63e00ec4ce",
+      "sizeBytes": 58093
+    },
+    {
+      "member": "PNG (Transparent)/magic_05.png",
+      "sha256": "92fb8c7a1d9bc14e052526c0505502c3e5b37d27502fa3d36d2c80b4565b62ef",
+      "sizeBytes": 74794
+    },
+    {
+      "member": "PNG (Transparent)/smoke_04.png",
+      "sha256": "2db2f69874cdb1e5203f2f86803d5debde30402590cf50a810afaba882184616",
+      "sizeBytes": 97568
+    },
+    {
+      "member": "PNG (Transparent)/smoke_07.png",
+      "sha256": "f7419fa4f11e346d0fb36a17ecbf616083c6962633c7847d92119c994ed9b4e4",
+      "sizeBytes": 77838
+    },
+    {
+      "member": "PNG (Transparent)/spark_01.png",
+      "sha256": "5902da3a324cad0a4b5a88ce1e3c9cc18fee50922c358ce93d8c9f1ad7708f0a",
+      "sizeBytes": 95070
+    },
+    {
+      "member": "PNG (Transparent)/spark_04.png",
+      "sha256": "3cba35b80a97c12283a8ecd41780a0412194de14562cbffc7f04e9157183f772",
+      "sizeBytes": 83811
+    },
+    {
+      "member": "PNG (Transparent)/spark_05.png",
+      "sha256": "9624ea2017b8b2767a9d3b82e978b7fdf5154d83e6756cd919da51447bb97138",
+      "sizeBytes": 64808
+    },
+    {
+      "member": "PNG (Transparent)/spark_06.png",
+      "sha256": "fe6d473393d3b9350c7a654b7cb5fbd343766b5b5b11d3e4aba476832d4a6d3f",
+      "sizeBytes": 46347
+    },
+    {
+      "member": "PNG (Transparent)/star_04.png",
+      "sha256": "6485ac16c773663bd39346f3bedae04465ac14c661eb47cc5cfa935cdbf6c2ec",
+      "sizeBytes": 30613
+    },
+    {
+      "member": "PNG (Transparent)/star_06.png",
+      "sha256": "65d3ff5aa87ec0770c11fe1293fdc70cdc5ccf0eabc2e2fd6a1ead922051035e",
+      "sizeBytes": 35453
+    },
+    {
+      "member": "PNG (Transparent)/star_07.png",
+      "sha256": "d3bc9b8f1960baab452e8a5e816b9edeee4420dbed5ddd7ebe174519860a451a",
+      "sizeBytes": 32369
+    },
+    {
+      "member": "PNG (Transparent)/star_08.png",
+      "sha256": "05f24d1ee76c1464074cbca58155e4be517fefd34a7001bb012561647cc3dec3",
+      "sizeBytes": 26479
+    },
+    {
+      "member": "PNG (Transparent)/trace_01.png",
+      "sha256": "34de69bc3f665b23fe9bed15f388efd8e8e4dc1a99f2fc5db9ba8715c525711f",
+      "sizeBytes": 38406
+    },
+    {
+      "member": "PNG (Transparent)/twirl_01.png",
+      "sha256": "ba3f4996a5a91ea3cba6817a9b4770a385a82ef0b9350cbda5c0f140d182af7e",
+      "sizeBytes": 51060
+    },
+    {
+      "member": "PNG (Transparent)/twirl_02.png",
+      "sha256": "3963633f6b2395a3fa95b9f4f65f22a4d38a2c561d9312dfff4646b71c7aa6e2",
+      "sizeBytes": 76886
+    }
+  ],
+  "version": 1
+}

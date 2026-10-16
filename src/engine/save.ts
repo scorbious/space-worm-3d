@@ -2,10 +2,15 @@
  * Versioned local save. Everything the player keeps between sessions lives in one JSON record so
  * it is easy to migrate. Corrupt or foreign data falls back to defaults instead of crashing.
  */
-export type Locale = 'en' | 'zh-CN'
-export type Quality = 'low' | 'medium' | 'high'
+import { SKINS } from '../game/content'
+import { emptyRecords, LOCAL_BOARD_SIZE, type LifeEntry, type Records } from '../game/rules'
 
-export type ScoreEntry = { name: string; score: number; seconds: number; at: number }
+export type Locale = 'en' | 'zh-CN'
+export const LOCALES: Locale[] = ['en', 'zh-CN']
+export type Quality = 'low' | 'medium' | 'high'
+/** Threat Language detail: full = badges, reticle, edge arrows; minimal = ground marks and colours only. */
+export type ThreatDetail = 'full' | 'minimal'
+export const HINT_IDS = ['rival', 'asteroid', 'gate', 'well', 'rim', 'edible', 'bite'] as const
 
 export type SaveData = {
   version: 1
@@ -14,36 +19,57 @@ export type SaveData = {
   musicVolume: number
   sfxVolume: number
   muted: boolean
-  sensitivity: number
-  invertY: boolean
   quality: Quality
   reducedMotion: boolean
+  /** Mouse sensitivity is irrelevant for heading steering; kept for keyboard turn speed. */
+  keyTurn: number
   tutorialDone: boolean
   playerName: string
-  leaderboard: ScoreEntry[]
+  stardust: number
+  ownedSkins: string[]
+  skin: string
+  records: Records
+  lives: LifeEntry[]
+  /** Global leaderboard participation is strictly opt-in. */
+  globalOptIn: boolean
+  threatMode: ThreatDetail
+  /** First-encounter hazard hints already shown. */
+  seenHints: string[]
 }
 
-export const SAVE_KEY = 'game3d.save'
-export const LEADERBOARD_SIZE = 10
+export const SAVE_KEY = 'spaceworm.save'
 
 export function defaultSave(): SaveData {
   return {
     version: 1,
     locale: '',
-    musicVolume: 0.7,
+    musicVolume: 0.6,
     sfxVolume: 0.8,
     muted: false,
-    sensitivity: 1,
-    invertY: false,
     quality: 'high',
     reducedMotion: false,
+    keyTurn: 1,
     tutorialDone: false,
-    playerName: 'PLAYER',
-    leaderboard: [],
+    playerName: 'Stargazer',
+    stardust: 0,
+    ownedSkins: ['nebula'],
+    skin: 'nebula',
+    records: emptyRecords(),
+    lives: [],
+    globalOptIn: false,
+    threatMode: 'full',
+    seenHints: [],
   }
 }
 
 const clamp01 = (v: unknown, fallback: number) => (typeof v === 'number' && Number.isFinite(v) ? Math.min(1, Math.max(0, v)) : fallback)
+const nonNegInt = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) && v > 0 ? Math.floor(v) : 0)
+
+export function sanitizeName(name: unknown, fallback = 'Stargazer'): string {
+  if (typeof name !== 'string') return fallback
+  const clean = name.replace(/[\u0000-\u001f<>]/g, '').trim().slice(0, 16)
+  return clean || fallback
+}
 
 /** Parse untrusted stored JSON into a valid SaveData (pure; unit tested). */
 export function parseSave(raw: string | null): SaveData {
@@ -58,35 +84,54 @@ export function parseSave(raw: string | null): SaveData {
     return base
   }
   if (data.version !== 1) return base
-  const board = Array.isArray(data.leaderboard) ? data.leaderboard : []
+  const skinIds = new Set(SKINS.map(s => s.id))
+  const owned = Array.isArray(data.ownedSkins) ? data.ownedSkins.filter((s): s is string => typeof s === 'string' && skinIds.has(s)) : []
+  if (!owned.includes('nebula')) owned.unshift('nebula')
+  const rec = (data.records && typeof data.records === 'object' ? data.records : {}) as Record<string, unknown>
+  const records = emptyRecords()
+  for (const key of Object.keys(records) as (keyof typeof records)[]) records[key] = nonNegInt(rec[key])
+  const lives = (Array.isArray(data.lives) ? data.lives : [])
+    .filter((e): e is LifeEntry => !!e && typeof e === 'object' && Number.isFinite((e as LifeEntry).length))
+    .map(e => ({
+      name: sanitizeName(e.name), length: nonNegInt(e.length), kills: nonNegInt(e.kills), seconds: nonNegInt(e.seconds),
+      mode: e.mode === 'team' ? 'team' as const : 'ffa' as const, at: nonNegInt(e.at),
+    }))
+    .sort((a, b) => b.length - a.length || b.kills - a.kills || a.at - b.at)
+    .slice(0, LOCAL_BOARD_SIZE)
+  const skin = typeof data.skin === 'string' && owned.includes(data.skin) ? data.skin : 'nebula'
   return {
     version: 1,
     locale: data.locale === 'en' || data.locale === 'zh-CN' ? data.locale : '',
     musicVolume: clamp01(data.musicVolume, base.musicVolume),
     sfxVolume: clamp01(data.sfxVolume, base.sfxVolume),
     muted: data.muted === true,
-    sensitivity: typeof data.sensitivity === 'number' && data.sensitivity >= 0.2 && data.sensitivity <= 3 ? data.sensitivity : base.sensitivity,
-    invertY: data.invertY === true,
     quality: data.quality === 'low' || data.quality === 'medium' || data.quality === 'high' ? data.quality : base.quality,
     reducedMotion: data.reducedMotion === true,
+    keyTurn: typeof data.keyTurn === 'number' && data.keyTurn >= 0.5 && data.keyTurn <= 1.8 ? data.keyTurn : 1,
     tutorialDone: data.tutorialDone === true,
-    playerName: typeof data.playerName === 'string' && data.playerName.trim() ? data.playerName.trim().slice(0, 16) : base.playerName,
-    leaderboard: board
-      .filter((e): e is ScoreEntry => !!e && typeof e === 'object' && typeof (e as ScoreEntry).name === 'string' && Number.isFinite((e as ScoreEntry).score))
-      .map(e => ({ name: e.name.slice(0, 16), score: Math.max(0, Math.floor(e.score)), seconds: Number.isFinite(e.seconds) ? e.seconds : 0, at: Number.isFinite(e.at) ? e.at : 0 }))
-      .slice(0, LEADERBOARD_SIZE),
+    playerName: sanitizeName(data.playerName),
+    stardust: nonNegInt(data.stardust),
+    ownedSkins: owned,
+    skin,
+    records,
+    lives,
+    globalOptIn: data.globalOptIn === true,
+    threatMode: data.threatMode === 'minimal' ? 'minimal' : 'full',
+    seenHints: Array.isArray(data.seenHints)
+      ? [...new Set(data.seenHints.filter((h): h is string => typeof h === 'string' && (HINT_IDS as readonly string[]).includes(h)))]
+      : [],
   }
 }
 
-/** Insert a run into a bounded, deterministically ordered leaderboard (higher score, then faster, then earlier). */
-export function insertScore(board: ScoreEntry[], entry: ScoreEntry): { board: ScoreEntry[]; rank: number } {
-  const next = [...board, entry].sort((a, b) => b.score - a.score || a.seconds - b.seconds || a.at - b.at).slice(0, LEADERBOARD_SIZE)
-  return { board: next, rank: next.indexOf(entry) }
+/** Buy a skin if affordable; pure so it can be tested. */
+export function purchaseSkin(data: SaveData, skinId: string): SaveData | null {
+  const skin = SKINS.find(s => s.id === skinId)
+  if (!skin || data.ownedSkins.includes(skinId) || data.stardust < skin.price) return null
+  return { ...data, stardust: data.stardust - skin.price, ownedSkins: [...data.ownedSkins, skinId], skin: skinId }
 }
 
 export class SaveStore {
   data: SaveData
-
   constructor(private readonly storage: Pick<Storage, 'getItem' | 'setItem'> | undefined = globalThis.localStorage) {
     let raw: string | null = null
     try {
@@ -99,6 +144,15 @@ export class SaveStore {
 
   update(patch: Partial<SaveData>): void {
     this.data = { ...this.data, ...patch }
+    this.persist()
+  }
+
+  replace(data: SaveData): void {
+    this.data = data
+    this.persist()
+  }
+
+  private persist(): void {
     try {
       this.storage?.setItem(SAVE_KEY, JSON.stringify(this.data))
     } catch {

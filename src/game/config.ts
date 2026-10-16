@@ -3,56 +3,72 @@
  * the same values so rule changes stay covered.
  */
 export const DEFAULT_CONFIG = {
-  run: {
-    seconds: 150,
-    lives: 3,
-    /** Seconds of invulnerability after a hit. */
-    invulnerable: 1.6,
-    /** Falling below this height costs a life and respawns at the last checkpoint. */
-    killY: -18,
+  arena: {
+    /** Radius of the circular arena in world units. Touching the rim is lethal. */
+    radius: 128,
+    /** AI worms in free-for-all (team mode always fields 6 vs 6). */
+    bots: 11,
+    food: 720,
+    stardust: 26,
+    pickups: 7,
+    celestials: 15,
+    asteroids: 16,
+    gates: 5,
+    wells: 4,
   },
-  score: {
-    core: 100,
-    /** Consecutive pickups within `comboWindow` seconds raise the multiplier up to `comboMax`. */
-    comboWindow: 3.5,
-    comboMax: 5,
-    /** Bonus per second left on the clock when every core is collected. */
-    timeBonus: 25,
-    lifeBonus: 500,
+  worm: {
+    baseSpeed: 12,
+    boostSpeed: 21,
+    /** Radians per second at base size; larger worms turn a little slower. */
+    turnRate: 3.8,
+    /** Length spent per second while boosting. */
+    boostCost: 3.2,
+    startLength: 14,
+    /** Boosting is unavailable below this length unless a free boost is active. */
+    minBoostLength: 12,
+    /** Segment spacing as a fraction of the worm radius. */
+    spacing: 0.62,
   },
-  player: {
-    radius: 0.42,
-    halfHeight: 0.5,
-    walkSpeed: 7,
-    sprintSpeed: 11,
-    acceleration: 60,
-    airControl: 0.45,
-    jumpSpeed: 10.5,
-    gravity: -30,
-    /** Extra gravity when the jump button is released early, for variable jump height. */
-    lowJumpGravity: -58,
-    maxFall: -40,
-    coyoteTime: 0.12,
-    jumpBuffer: 0.14,
-    dashSpeed: 22,
-    dashTime: 0.16,
-    dashCooldown: 0.9,
-    turnSpeed: 14,
+  team: {
+    seconds: 240,
+    respawn: 4,
+  },
+  pickups: {
+    magnet: 10,
+    shield: 25,
+    freeBoost: 7,
+    magnetRange: 13,
+  },
+  bite: {
+    /** A head may bite through a rival body when it is at least this many times longer... */
+    ratio: 1.15,
+    /** ...and at least this many segments longer (keeps near-ties deadly both ways). */
+    minLead: 3,
+    /** The bitten worm always keeps its head plus this many segments in total. */
+    minKeep: 4,
+    /** Share of the severed plain segments' mass that spills as food. */
+    spill: 0.5,
+    /** Seconds the biter passes through its victim after a bite (no stump kill). */
+    immunity: 0.45,
+    /** Stardust paid to the player per bite. */
+    shards: 1,
+  },
+  feast: {
+    /** Seconds between bites before the feast combo resets. */
+    comboWindow: 1.4,
+    /** Chance that a naturally spawned mote is a rare prismatic Nova Mote. */
+    novaChance: 0.012,
+    novaMax: 4,
+    novaValue: 10,
+    /** Minimum length to wear the Bounty Crown, and stardust paid to whoever takes it. */
+    crownMinLength: 30,
+    crownBounty: 5,
   },
   camera: {
-    distance: 6.4,
-    height: 2.4,
-    minPitch: -0.35,
-    maxPitch: 1.1,
-    follow: 10,
-    fov: 62,
-  },
-  drones: {
-    speed: 3.2,
-    radius: 0.7,
-    /** Drones speed up as the clock runs down. */
-    rageSpeed: 5,
-    rageAt: 45,
+    height: 42,
+    tilt: 0.42,
+    fov: 52,
+    follow: 6,
   },
 } as const
 

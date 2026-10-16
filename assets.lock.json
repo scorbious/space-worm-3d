@@ -1,6 +1,37 @@
 {
   "version": 2,
-  "groups": {},
+  "groups": {
+    "models": {
+      "name": "Models",
+      "order": 10
+    },
+    "share": {
+      "name": "Share",
+      "order": 20
+    }
+  },
   "bundles": {},
-  "assets": {}
+  "assets": {
+    "assets/models/stage-beacon.glb": {
+      "path": "/manus-storage/game/sha256/90378d5190c0eecfc59de5a27cbfa0fdfa11f047a588a70987e056db1f74266a.glb",
+      "sha256": "sha256:90378d5190c0eecfc59de5a27cbfa0fdfa11f047a588a70987e056db1f74266a",
+      "size": 3051500,
+      "assetType": "model",
+      "groupId": "models"
+    },
+    "assets/share/favicon.png": {
+      "path": "/manus-storage/game/sha256/6cdec7e23ca72d0494f445dfb8d7457aa1bad9df5b56190349fb23c78fb25d63.png",
+      "sha256": "sha256:6cdec7e23ca72d0494f445dfb8d7457aa1bad9df5b56190349fb23c78fb25d63",
+      "size": 414007,
+      "assetType": "image",
+      "groupId": "share"
+    },
+    "assets/share/og.png": {
+      "path": "/manus-storage/game/sha256/ea18756c429b33f493a01e65b77ba2ed79c870acac7905fbac76e193db1eb868.png",
+      "sha256": "sha256:ea18756c429b33f493a01e65b77ba2ed79c870acac7905fbac76e193db1eb868",
+      "size": 1444326,
+      "assetType": "image",
+      "groupId": "share"
+    }
+  }
 }

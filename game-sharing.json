@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 2,
+  "title": "Space Worm 3D",
+  "description": "Steer a neon cosmic worm, swallow planets and stars for permanent powers, boost past asteroids, energy gates and gravity wells, and chase the longest life in free-for-all or team battles.",
+  "defaultCaptions": {
+    "x": "I just swallowed a star in Space Worm 3D 🪐 Grow, boost and devour the cosmos — how long can you get?",
+    "facebook": "Space Worm 3D: a neon cosmic arena where you grow by eating energy and swallowing planets for permanent powers. Free-for-all or team battles, right in your browser.",
+    "reddit": "Space Worm 3D — a 3D snake-growth arena game in the browser: swallow celestial bodies for permanent powers, dodge asteroids, energy gates and gravity wells.",
+    "discord": "Come play Space Worm 3D with me — grow, boost and devour the cosmos. Beat my peak length!"
+  },
+  "assets": {
+    "og": "assets/share/og.png",
+    "favicon": "assets/share/favicon.png"
+  }
+}

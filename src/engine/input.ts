@@ -1,179 +1,151 @@
 /**
- * Unified input: keyboard + mouse (pointer lock), gamepad and touch all feed one action state.
- * Gameplay reads `move`, `look` and `pressed()/held()`; it never checks raw keys.
- *
- * Call `endFrame()` once per rendered frame after gameplay consumed edge-triggered presses.
+ * Unified steering input. Every source resolves to one of:
+ *  - an absolute heading target (mouse cursor, touch stick, gamepad stick), or
+ *  - a relative turn axis (keyboard A/D or arrows),
+ * plus a held boost flag. Gameplay reads `steer` and `boost`; it never checks raw events.
  */
-export type Action = 'jump' | 'sprint' | 'dash' | 'pause' | 'confirm' | 'back' | 'interact'
-export type InputMethod = 'keyboard' | 'gamepad' | 'touch'
+export type Action = 'boost' | 'pause' | 'confirm'
+export type InputMethod = 'mouse' | 'keyboard' | 'gamepad' | 'touch'
 
-const KEY_BINDINGS: Record<Action, string[]> = {
-  jump: ['Space'],
-  sprint: ['ShiftLeft', 'ShiftRight'],
-  dash: ['KeyF', 'KeyJ'],
+export type Steer =
+  | { kind: 'none' }
+  | { kind: 'screen'; x: number; y: number }
+  | { kind: 'direction'; x: number; y: number }
+  | { kind: 'turn'; axis: number }
+
+const KEYS = {
+  left: ['KeyA', 'ArrowLeft'],
+  right: ['KeyD', 'ArrowRight'],
+  boost: ['Space', 'KeyW', 'ArrowUp', 'ShiftLeft', 'ShiftRight'],
   pause: ['Escape', 'KeyP'],
   confirm: ['Enter', 'NumpadEnter'],
-  // Menus handle Escape/Backspace themselves via DOM keydown; `back` is the gamepad B button.
-  back: [],
-  interact: ['KeyE'],
 }
-const MOVE_KEYS = { up: ['KeyW', 'ArrowUp'], down: ['KeyS', 'ArrowDown'], left: ['KeyA', 'ArrowLeft'], right: ['KeyD', 'ArrowRight'] }
-// Standard gamepad mapping: A=0, B=1, X=2, Y=3, LB=4, RB=5, RT=7, Start=9, L3=10.
-const PAD_BINDINGS: Record<Action, number[]> = { jump: [0], sprint: [4, 10], dash: [2, 5, 7], pause: [9], confirm: [0], back: [1], interact: [3] }
 
 export class Input {
-  /** Movement intent in [-1, 1]: x = strafe right, y = forward. */
-  readonly move = { x: 0, y: 0 }
-  /** Camera look delta accumulated since the last `endFrame()` (radians-ish units, pre-sensitivity). */
-  readonly look = { x: 0, y: 0 }
-  method: InputMethod = 'keyboard'
-  /** Multiplies look deltas; settings screen writes it. */
-  sensitivity = 1
-  invertY = false
-
+  method: InputMethod = 'mouse'
+  steer: Steer = { kind: 'none' }
+  boost = false
+  /** Keyboard turn speed multiplier from settings. */
+  keyTurn = 1
   private keys = new Set<string>()
-  private held_ = new Set<Action>()
   private pressed_ = new Set<Action>()
-  private touchMove = { x: 0, y: 0 }
-  private touchButtons = new Set<Action>()
-  private padPrev = new Set<Action>()
-  private listeners: Array<() => void> = []
+  private mouse = { x: 0, y: 0, known: false, down: false }
+  private touchDir: { x: number; y: number } | null = null
+  private touchBoost = false
+  private padBoostPrev = false
+  private padPausePrev = false
+  private lastKeyTurn = 0
 
   constructor(private readonly canvas: HTMLCanvasElement) {
-    const on = <K extends keyof WindowEventMap>(target: Window | HTMLElement, type: K, fn: (e: WindowEventMap[K]) => void, opts?: AddEventListenerOptions) => {
-      target.addEventListener(type, fn as EventListener, opts)
-      this.listeners.push(() => target.removeEventListener(type, fn as EventListener, opts))
-    }
-    on(window, 'keydown', e => {
-      if (e.repeat) return
-      this.keys.add(e.code)
-      this.method = 'keyboard'
-      for (const [action, codes] of Object.entries(KEY_BINDINGS) as [Action, string[]][]) {
-        if (codes.includes(e.code)) this.pressed_.add(action)
+    window.addEventListener('keydown', e => {
+      // Only text entry swallows game keys; sliders, checkboxes and selects keep Escape working.
+      const target = e.target as HTMLElement | null
+      const typing = target?.matches?.('input:not([type]), input[type="text"], textarea')
+      if (typing) {
+        if (e.code === 'Escape') target!.blur()
+        return
       }
-      // Keep the page from scrolling, but never block typing in text fields (leaderboard name).
-      const typing = (e.target as HTMLElement | null)?.matches?.('input, textarea')
-      if (!typing && (e.code === 'Space' || e.code.startsWith('Arrow'))) e.preventDefault()
+      if (!e.repeat) {
+        if (KEYS.pause.includes(e.code)) this.pressed_.add('pause')
+        if (KEYS.confirm.includes(e.code)) this.pressed_.add('confirm')
+      }
+      this.keys.add(e.code)
+      if ([...KEYS.left, ...KEYS.right].includes(e.code)) {
+        this.method = 'keyboard'
+        this.lastKeyTurn = performance.now()
+      }
+      if (e.code === 'Space' || e.code.startsWith('Arrow')) e.preventDefault()
     })
-    on(window, 'keyup', e => this.keys.delete(e.code))
-    on(window, 'blur', () => this.keys.clear())
-    on(window, 'mousedown', e => {
-      // Left click dashes while the mouse is captured for camera look.
-      if (document.pointerLockElement === canvas && e.button === 0) this.pressed_.add('dash')
+    window.addEventListener('keyup', e => this.keys.delete(e.code))
+    window.addEventListener('blur', () => {
+      this.keys.clear()
+      this.mouse.down = false
+      this.touchBoost = false
     })
-    on(window, 'mousemove', e => {
-      if (document.pointerLockElement !== canvas) return
-      this.look.x += e.movementX * 0.0022
-      this.look.y += e.movementY * 0.0022
+    canvas.addEventListener('pointermove', e => {
+      if (e.pointerType !== 'mouse') return
+      this.mouse.x = e.clientX
+      this.mouse.y = e.clientY
+      this.mouse.known = true
+      // Small jitters while using keys should not steal steering back to the mouse.
+      if (this.method !== 'keyboard' || performance.now() - this.lastKeyTurn > 600) this.method = 'mouse'
     })
+    canvas.addEventListener('pointerdown', e => {
+      if (e.pointerType !== 'mouse') return
+      if (e.button === 0 || e.button === 2) this.mouse.down = true
+    })
+    window.addEventListener('pointerup', e => {
+      if (e.pointerType === 'mouse') this.mouse.down = false
+    })
+    canvas.addEventListener('contextmenu', e => e.preventDefault())
   }
 
-  /** Request pointer lock for mouse look (must be called from a user gesture). */
-  lockPointer(): void {
-    if (this.method !== 'touch' && document.pointerLockElement !== this.canvas) {
-      this.canvas.requestPointerLock?.()?.catch?.(() => undefined)
-    }
-  }
-
-  unlockPointer(): void {
-    if (document.pointerLockElement) document.exitPointerLock()
-  }
-
-  /** Touch controls feed these from the on-screen joystick and buttons. */
-  setTouchMove(x: number, y: number): void {
+  /** Touch controls feed these from the dual-touch layer. */
+  setTouchSteer(dir: { x: number; y: number } | null): void {
     this.method = 'touch'
-    this.touchMove.x = x
-    this.touchMove.y = y
+    this.touchDir = dir
   }
 
-  addTouchLook(dx: number, dy: number): void {
+  setTouchBoost(down: boolean): void {
     this.method = 'touch'
-    this.look.x += dx * 0.006
-    this.look.y += dy * 0.006
+    this.touchBoost = down
   }
 
-  setTouchButton(action: Action, down: boolean): void {
-    this.method = 'touch'
-    if (down && !this.touchButtons.has(action)) this.pressed_.add(action)
-    if (down) this.touchButtons.add(action)
-    else this.touchButtons.delete(action)
-  }
-
-  /** Sample continuous sources. Call once per rendered frame before gameplay reads input. */
+  /** Sample all sources. Call once per rendered frame before gameplay reads input. */
   update(): void {
     const k = (codes: string[]) => codes.some(code => this.keys.has(code))
-    let x = (k(MOVE_KEYS.right) ? 1 : 0) - (k(MOVE_KEYS.left) ? 1 : 0)
-    let y = (k(MOVE_KEYS.up) ? 1 : 0) - (k(MOVE_KEYS.down) ? 1 : 0)
-    this.held_.clear()
-    for (const [action, codes] of Object.entries(KEY_BINDINGS) as [Action, string[]][]) {
-      if (k(codes)) this.held_.add(action)
+    const axis = (k(KEYS.right) ? 1 : 0) - (k(KEYS.left) ? 1 : 0)
+    let boost = k(KEYS.boost) || this.mouse.down || this.touchBoost
+    let steer: Steer = { kind: 'none' }
+
+    if (this.method === 'touch') {
+      if (this.touchDir) steer = { kind: 'direction', x: this.touchDir.x, y: this.touchDir.y }
+    } else if (axis !== 0) {
+      steer = { kind: 'turn', axis: axis * this.keyTurn }
+    } else if (this.method === 'mouse' && this.mouse.known) {
+      steer = { kind: 'screen', x: this.mouse.x, y: this.mouse.y }
     }
-    for (const action of this.touchButtons) this.held_.add(action)
-    if (this.touchMove.x !== 0 || this.touchMove.y !== 0) {
-      x = this.touchMove.x
-      y = this.touchMove.y
-    }
+
     const pad = navigator.getGamepads?.().find(p => p && p.connected)
     if (pad) {
-      const dead = (v: number) => (Math.abs(v) < 0.18 ? 0 : v)
+      const dead = (v: number) => (Math.abs(v) < 0.22 ? 0 : v)
       const lx = dead(pad.axes[0] ?? 0)
       const ly = dead(pad.axes[1] ?? 0)
-      const rx = dead(pad.axes[2] ?? 0)
-      const ry = dead(pad.axes[3] ?? 0)
-      const padActive = lx !== 0 || ly !== 0 || rx !== 0 || ry !== 0 || pad.buttons.some(b => b.pressed)
-      if (padActive) this.method = 'gamepad'
-      if (lx !== 0 || ly !== 0) {
-        x = lx
-        y = -ly
+      const padBoost = !!(pad.buttons[0]?.pressed || pad.buttons[7]?.pressed || pad.buttons[5]?.pressed)
+      if (lx !== 0 || ly !== 0 || padBoost) this.method = 'gamepad'
+      if (this.method === 'gamepad') {
+        if (lx !== 0 || ly !== 0) steer = { kind: 'direction', x: lx, y: -ly }
+        boost ||= padBoost
       }
-      this.look.x += rx * 0.045
-      this.look.y += ry * 0.045
-      const now = new Set<Action>()
-      for (const [action, buttons] of Object.entries(PAD_BINDINGS) as [Action, number[]][]) {
-        if (buttons.some(i => pad.buttons[i]?.pressed)) now.add(action)
-      }
-      for (const action of now) {
-        this.held_.add(action)
-        if (!this.padPrev.has(action)) this.pressed_.add(action)
-      }
-      this.padPrev = now
+      const padPause = !!pad.buttons[9]?.pressed
+      if (padPause && !this.padPausePrev) this.pressed_.add('pause')
+      if (padBoost && !this.padBoostPrev) this.pressed_.add('confirm')
+      this.padPausePrev = padPause
+      this.padBoostPrev = padBoost
     }
-    const len = Math.hypot(x, y)
-    this.move.x = len > 1 ? x / len : x
-    this.move.y = len > 1 ? y / len : y
+    this.steer = steer
+    this.boost = boost
   }
 
-  held(action: Action): boolean {
-    return this.held_.has(action)
-  }
-
-  /** True once per physical press. */
   pressed(action: Action): boolean {
     return this.pressed_.has(action)
   }
 
-  /**
-   * Read and clear a press. Use this inside fixed simulation steps: several steps can run in one
-   * rendered frame, and a press must trigger exactly one jump/confirm.
-   */
+  /** Read and clear a press. */
   consume(action: Action): boolean {
     return this.pressed_.delete(action)
   }
 
-  /** Consume the look delta with sensitivity/invert applied. */
-  takeLook(): { x: number; y: number } {
-    const out = { x: this.look.x * this.sensitivity, y: this.look.y * this.sensitivity * (this.invertY ? -1 : 1) }
-    this.look.x = 0
-    this.look.y = 0
-    return out
+  clearBoost(): void {
+    this.mouse.down = false
+    this.touchBoost = false
   }
 
   endFrame(): void {
     this.pressed_.clear()
   }
 
-  dispose(): void {
-    for (const off of this.listeners) off()
-    this.listeners = []
+  get element(): HTMLCanvasElement {
+    return this.canvas
   }
 }

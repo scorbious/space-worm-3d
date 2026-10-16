@@ -1,99 +1,171 @@
+/**
+ * Pure gameplay rules. No three.js, DOM or randomness here so everything is unit tested.
+ */
 import { CONFIG } from './config'
+import { CELESTIALS, POWERS, POWER_IDS, type CelestialId, type PowerId } from './content'
+
+export type Mode = 'ffa' | 'team'
+
+export type PowerStacks = Record<PowerId, number>
+export const emptyStacks = (): PowerStacks => ({ tide: 0, tail: 0, core: 0, drive: 0, heart: 0 })
+
+/** Segment count for a given mass. Mass is the continuous quantity; length is what players see. */
+export function lengthFromMass(mass: number): number {
+  return Math.max(4, Math.floor(mass))
+}
 
 /**
- * Pure run rules: score, combo, lives, clock, win/lose. No three.js, no Rapier, no DOM — the
- * scene reports events and reads the resulting state, and unit tests cover every rule here.
+ * Bite rule: a clearly longer worm's head cuts through a shorter rival's body instead of dying.
+ * Near-ties stay lethal both ways so the rule never feels random.
  */
-export type RunPhase = 'playing' | 'won' | 'lost'
-export type LoseReason = 'time' | 'lives'
-
-export type RunState = {
-  unranked: boolean
-  phase: RunPhase
-  loseReason?: LoseReason
-  score: number
-  lives: number
-  timeLeft: number
-  elapsed: number
-  collected: number
-  total: number
-  combo: number
-  comboTimer: number
-  invulnerable: number
-  /** End-of-run bonuses (already included in `score`), kept separate for the results screen. */
-  timeBonus: number
-  lifeBonus: number
+export function canBite(biterLength: number, victimLength: number): boolean {
+  return biterLength >= victimLength * CONFIG.bite.ratio && biterLength - victimLength >= CONFIG.bite.minLead
 }
 
-export function createRun(totalCores: number, rules = CONFIG): RunState {
+/** Body radius grows quickly at first, then levels off so giant worms stay readable. */
+export function radiusForLength(length: number): number {
+  return 0.9 + 1.25 * (1 - Math.exp(-Math.max(0, length - CONFIG.worm.startLength) / 170))
+}
+
+export function spacingForRadius(radius: number): number {
+  return radius * CONFIG.worm.spacing
+}
+
+/** Turn rate slows down as the worm thickens, widening its tightest circle. */
+export function turnRateFor(radius: number): number {
+  return CONFIG.worm.turnRate / (0.72 + radius * 0.31)
+}
+
+/** Head segments that can never collide with the worm itself (neck region). */
+export function selfSafeSegments(radius: number): number {
+  return Math.ceil((radius * 4.2) / spacingForRadius(radius)) + 4
+}
+
+export type PowerEffects = {
+  /** Multiplier for the pickup radius. */
+  pickup: number
+  /** Multiplier for the length spent while boosting. */
+  boostCost: number
+  /** Fraction of gravity well slowdown that still applies. */
+  wellSlow: number
+  /** Multiplier for movement speed. */
+  speed: number
+  /** Multiplier for growth from energy. */
+  growth: number
+}
+
+export function powerEffects(stacks: PowerStacks): PowerEffects {
+  const n = (id: PowerId) => Math.min(POWERS[id].maxStacks, Math.max(0, stacks[id] | 0))
   return {
-    unranked: false,
-    phase: 'playing',
-    score: 0,
-    lives: rules.run.lives,
-    timeLeft: rules.run.seconds,
-    elapsed: 0,
-    collected: 0,
-    total: totalCores,
-    combo: 0,
-    comboTimer: 0,
-    invulnerable: 0,
-    timeBonus: 0,
-    lifeBonus: 0,
+    pickup: 1 + 0.25 * n('tide'),
+    boostCost: Math.pow(0.8, n('tail')),
+    wellSlow: Math.pow(0.6, n('core')),
+    speed: 1 + 0.07 * n('drive'),
+    growth: 1 + 0.2 * n('heart'),
   }
 }
 
-export function tick(s: RunState, dt: number): RunState {
-  if (s.phase !== 'playing') return s
-  const timeLeft = Math.max(0, s.timeLeft - dt)
-  const comboTimer = Math.max(0, s.comboTimer - dt)
-  const next: RunState = {
-    ...s,
-    timeLeft,
-    elapsed: s.elapsed + dt,
-    comboTimer,
-    combo: comboTimer > 0 ? s.combo : 0,
-    invulnerable: Math.max(0, s.invulnerable - dt),
+/** Grant the power a swallowed celestial carries. Returns false when already at max stacks. */
+export function addPower(stacks: PowerStacks, celestial: CelestialId): boolean {
+  const power = CELESTIALS[celestial].power
+  if (stacks[power] >= POWERS[power].maxStacks) return false
+  stacks[power] += 1
+  return true
+}
+
+export function canConsume(length: number, celestial: CelestialId): boolean {
+  return length >= CELESTIALS[celestial].minLength
+}
+
+/** Gravity wells slow movement near their center; the planet's power resists it. */
+export function wellSpeedFactor(distance: number, wellRadius: number, wellSlow: number): number {
+  if (distance >= wellRadius) return 1
+  const depth = 1 - distance / wellRadius
+  return 1 - Math.min(0.62, 0.25 + depth * 0.5) * wellSlow
+}
+
+export type GateState = { phase: 'off' | 'warn' | 'on'; remaining: number }
+
+/** Energy gates cycle off → warn → on. `offset` staggers gates so the arena keeps changing. */
+export function gateState(time: number, period: number, onSeconds: number, offset: number, warnSeconds = 1.2): GateState {
+  const t = (((time + offset) % period) + period) % period
+  const offEnd = period - onSeconds
+  if (t >= offEnd) return { phase: 'on', remaining: period - t }
+  if (t >= offEnd - warnSeconds) return { phase: 'warn', remaining: offEnd - t }
+  return { phase: 'off', remaining: offEnd - warnSeconds - t }
+}
+
+export type LifeSummary = {
+  mode: Mode
+  peakLength: number
+  kills: number
+  celestials: number
+  shards: number
+  seconds: number
+}
+
+/** Stardust awarded at the end of a life on top of collected shards. */
+export function stardustForLife(life: LifeSummary): number {
+  return Math.floor(life.peakLength / 6) + life.kills * 8 + life.celestials * 4 + life.shards
+}
+
+export type LifeEntry = { name: string; length: number; kills: number; seconds: number; mode: Mode; at: number }
+export const LOCAL_BOARD_SIZE = 10
+
+/** Bounded, deterministic local board: longest peak, then more kills, then earlier. */
+export function insertLife(board: LifeEntry[], entry: LifeEntry): { board: LifeEntry[]; rank: number } {
+  const next = [...board, entry].sort((a, b) => b.length - a.length || b.kills - a.kills || a.at - b.at).slice(0, LOCAL_BOARD_SIZE)
+  return { board: next, rank: next.indexOf(entry) }
+}
+
+export type Records = {
+  bestLength: number
+  mostKills: number
+  mostCelestials: number
+  longestLife: number
+  lives: number
+  totalKills: number
+  totalStardust: number
+  teamWins: number
+  teamMatches: number
+}
+export const emptyRecords = (): Records => ({
+  bestLength: 0, mostKills: 0, mostCelestials: 0, longestLife: 0, lives: 0, totalKills: 0, totalStardust: 0, teamWins: 0, teamMatches: 0,
+})
+
+/** Fold one finished life into the records; returns which personal bests were beaten. */
+export function applyLife(records: Records, life: LifeSummary, stardust: number): { records: Records; newBests: (keyof Records)[] } {
+  const next = { ...records }
+  const newBests: (keyof Records)[] = []
+  const best = (key: 'bestLength' | 'mostKills' | 'mostCelestials' | 'longestLife', value: number) => {
+    if (value > next[key]) {
+      if (next[key] > 0 || key === 'bestLength') newBests.push(key)
+      next[key] = value
+    }
   }
-  if (timeLeft <= 0) return { ...next, phase: 'lost', loseReason: 'time' }
-  return next
+  best('bestLength', life.peakLength)
+  best('mostKills', life.kills)
+  best('mostCelestials', life.celestials)
+  best('longestLife', Math.floor(life.seconds))
+  next.lives += 1
+  next.totalKills += life.kills
+  next.totalStardust += stardust
+  return { records: next, newBests }
 }
 
-/** A core was picked up. Returns the new state and the points it was worth (for popups). */
-export function collect(s: RunState, rules = CONFIG): { state: RunState; points: number } {
-  if (s.phase !== 'playing') return { state: s, points: 0 }
-  const combo = Math.min(rules.score.comboMax, s.comboTimer > 0 ? s.combo + 1 : 1)
-  const points = rules.score.core * combo
-  const collected = s.collected + 1
-  let next: RunState = { ...s, score: s.score + points, combo, comboTimer: rules.score.comboWindow, collected }
-  if (collected >= s.total) {
-    const timeBonus = Math.ceil(next.timeLeft) * rules.score.timeBonus
-    const lifeBonus = next.lives * rules.score.lifeBonus
-    next = { ...next, phase: 'won', timeBonus, lifeBonus, score: next.score + timeBonus + lifeBonus }
-  }
-  return { state: next, points }
-}
-
-/** The player was hit or fell. Ignored while invulnerable unless `fell` (falling always costs a life). */
-export function damage(s: RunState, fell = false, rules = CONFIG): { state: RunState; hurt: boolean } {
-  if (s.phase !== 'playing') return { state: s, hurt: false }
-  if (!fell && s.invulnerable > 0) return { state: s, hurt: false }
-  const lives = s.lives - 1
-  const next: RunState = { ...s, lives, combo: 0, comboTimer: 0, invulnerable: rules.run.invulnerable }
-  if (lives <= 0) return { state: { ...next, lives: 0, phase: 'lost', loseReason: 'lives' }, hurt: true }
-  return { state: next, hurt: true }
-}
-
-/** Star rating on the results screen: 1 for finishing, +1 at half time left, +1 with no hits. */
-export function stars(s: RunState, rules = CONFIG): number {
-  if (s.phase !== 'won') return 0
-  let n = 1
-  if (s.timeLeft >= rules.run.seconds / 2) n += 1
-  if (s.lives === rules.run.lives) n += 1
-  return n
+export function teamWinner(scores: readonly [number, number]): 0 | 1 | -1 {
+  if (scores[0] === scores[1]) return -1
+  return scores[0] > scores[1] ? 0 : 1
 }
 
 export function formatClock(seconds: number): string {
-  const whole = Math.max(0, Math.ceil(seconds))
-  return `${Math.floor(whole / 60)}:${String(whole % 60).padStart(2, '0')}`
+  const s = Math.max(0, Math.ceil(seconds))
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`
 }
+
+/** Online submissions are only valid inside the board's duration window. */
+export function lifeEligibleForBoard(peakLength: number, durationMs: number): boolean {
+  return peakLength >= 1 && peakLength <= 100000 && durationMs >= 3000 && durationMs <= 1800000
+}
+
+export const ALL_POWERS = POWER_IDS

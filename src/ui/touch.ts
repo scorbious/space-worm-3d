@@ -1,87 +1,110 @@
 import type { Input } from '../engine/input'
 
 /**
- * On-screen touch controls: a floating stick on the left half, drag-to-look on the right half,
- * and JUMP / DASH buttons. Enabled automatically on the first touch.
+ * Dual-touch controls: the left side of the screen is a floating steering stick that appears
+ * where the thumb lands; the right side is a boost zone with a large visible button. Both
+ * thumbs work independently (multi-touch). Hidden until the device reports a touch.
  */
 export class TouchControls {
-  private stickId: number | null = null
-  private lookId: number | null = null
+  private el: HTMLElement
+  private base: HTMLElement
+  private knob: HTMLElement
+  private boostBtn: HTMLElement
+  private steerId: number | null = null
+  private boostIds = new Set<number>()
   private origin = { x: 0, y: 0 }
-  private last = { x: 0, y: 0 }
-  private readonly stick: HTMLElement
-  private readonly knob: HTMLElement
+  private enabled = false
 
-  constructor(root: HTMLElement, private readonly input: Input, private readonly active: () => boolean) {
-    const layer = root.querySelector<HTMLElement>('.touch')!
-    this.stick = layer.querySelector('.touch-stick')!
-    this.knob = this.stick.querySelector('i')!
-    const radius = 56
+  constructor(root: HTMLElement, private readonly input: Input) {
+    this.el = document.createElement('div')
+    this.el.className = 'touch'
+    this.el.innerHTML = `
+      <div class="touch-zone touch-left"></div>
+      <div class="touch-zone touch-right"></div>
+      <div class="stick-base"><div class="stick-knob"></div></div>
+      <div class="boost-btn" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M13 2 4 14h6l-1 8 9-12h-6z" fill="currentColor"/></svg></div>`
+    root.appendChild(this.el)
+    this.base = this.el.querySelector('.stick-base')!
+    this.knob = this.el.querySelector('.stick-knob')!
+    this.boostBtn = this.el.querySelector('.boost-btn')!
+    const left = this.el.querySelector<HTMLElement>('.touch-left')!
+    const right = this.el.querySelector<HTMLElement>('.touch-right')!
 
-    const enable = () => document.body.classList.add('has-touch')
-    if (matchMedia('(pointer: coarse)').matches) enable()
-    window.addEventListener('touchstart', enable, { once: true, passive: true })
-    // Any touch switches hints/prompts to touch, even taps on menu buttons.
-    window.addEventListener('pointerdown', e => {
-      if (e.pointerType === 'touch') this.input.method = 'touch'
-    }, { capture: true })
+    const markTouch = () => document.body.classList.add('has-touch')
+    window.addEventListener('touchstart', markTouch, { passive: true })
+    if (matchMedia('(pointer: coarse)').matches) markTouch()
 
-    const canvas = document.querySelector<HTMLCanvasElement>('#game')!
-    canvas.addEventListener('pointerdown', e => {
-      if (e.pointerType !== 'touch' || !this.active()) return
-      if (e.clientX < window.innerWidth * 0.45 && this.stickId === null) {
-        this.stickId = e.pointerId
-        this.origin = { x: e.clientX, y: e.clientY }
-        this.stick.style.left = `${e.clientX}px`
-        this.stick.style.top = `${e.clientY}px`
-        this.stick.classList.add('is-active')
-      } else if (this.lookId === null) {
-        this.lookId = e.pointerId
-        this.last = { x: e.clientX, y: e.clientY }
-      }
+    left.addEventListener('pointerdown', e => {
+      if (e.pointerType === 'mouse' || this.steerId !== null) return
+      e.preventDefault()
+      left.setPointerCapture(e.pointerId)
+      this.steerId = e.pointerId
+      this.origin = { x: e.clientX, y: e.clientY }
+      this.base.style.transform = `translate(${e.clientX}px, ${e.clientY}px)`
+      this.knob.style.transform = 'translate(0px, 0px)'
+      this.base.classList.add('is-on')
     })
-    window.addEventListener('pointermove', e => {
-      if (e.pointerId === this.stickId) {
-        let dx = e.clientX - this.origin.x
-        let dy = e.clientY - this.origin.y
-        const len = Math.hypot(dx, dy)
-        if (len > radius) {
-          dx = (dx / len) * radius
-          dy = (dy / len) * radius
-        }
-        this.knob.style.transform = `translate(${dx}px, ${dy}px)`
-        this.input.setTouchMove(dx / radius, -dy / radius)
-      } else if (e.pointerId === this.lookId) {
-        this.input.addTouchLook(e.clientX - this.last.x, e.clientY - this.last.y)
-        this.last = { x: e.clientX, y: e.clientY }
+    left.addEventListener('pointermove', e => {
+      if (e.pointerId !== this.steerId) return
+      const max = Math.min(70, window.innerWidth * 0.09 + 20)
+      let dx = e.clientX - this.origin.x
+      let dy = e.clientY - this.origin.y
+      const d = Math.hypot(dx, dy)
+      // Follow the thumb when it drifts beyond the ring, so steering never "runs out".
+      if (d > max * 1.35) {
+        const k = (d - max * 1.35) / d
+        this.origin.x += dx * k
+        this.origin.y += dy * k
+        this.base.style.transform = `translate(${this.origin.x}px, ${this.origin.y}px)`
+        dx = e.clientX - this.origin.x
+        dy = e.clientY - this.origin.y
       }
+      const len = Math.hypot(dx, dy)
+      const clamp = Math.min(1, len / max)
+      const kx = len > 0 ? (dx / len) * clamp * max : 0
+      const ky = len > 0 ? (dy / len) * clamp * max : 0
+      this.knob.style.transform = `translate(${kx}px, ${ky}px)`
+      if (len > 6) this.input.setTouchSteer({ x: dx / len, y: -dy / len })
     })
-    const end = (e: PointerEvent) => {
-      if (e.pointerId === this.stickId) {
-        this.stickId = null
-        this.knob.style.transform = ''
-        this.stick.classList.remove('is-active')
-        this.input.setTouchMove(0, 0)
-      }
-      if (e.pointerId === this.lookId) this.lookId = null
+    const endSteer = (e: PointerEvent) => {
+      if (e.pointerId !== this.steerId) return
+      this.steerId = null
+      this.base.classList.remove('is-on')
+      this.input.setTouchSteer(null)
     }
-    window.addEventListener('pointerup', end)
-    window.addEventListener('pointercancel', end)
+    left.addEventListener('pointerup', endSteer)
+    left.addEventListener('pointercancel', endSteer)
 
-    for (const btn of layer.querySelectorAll<HTMLElement>('[data-touch]')) {
-      const action = btn.dataset.touch as 'jump' | 'dash'
-      btn.addEventListener('pointerdown', e => {
-        e.preventDefault()
-        btn.setPointerCapture(e.pointerId)
-        btn.classList.add('is-down')
-        this.input.setTouchButton(action, true)
-      })
-      const up = () => {
-        btn.classList.remove('is-down')
-        this.input.setTouchButton(action, false)
+    right.addEventListener('pointerdown', e => {
+      if (e.pointerType === 'mouse') return
+      e.preventDefault()
+      right.setPointerCapture(e.pointerId)
+      this.boostIds.add(e.pointerId)
+      this.input.setTouchBoost(true)
+      this.boostBtn.classList.add('is-on')
+    })
+    const endBoost = (e: PointerEvent) => {
+      if (!this.boostIds.delete(e.pointerId)) return
+      if (this.boostIds.size === 0) {
+        this.input.setTouchBoost(false)
+        this.boostBtn.classList.remove('is-on')
       }
-      btn.addEventListener('pointerup', up)
-      btn.addEventListener('pointercancel', up)
+    }
+    right.addEventListener('pointerup', endBoost)
+    right.addEventListener('pointercancel', endBoost)
+  }
+
+  /** Show zones only while a life is being played. */
+  sync(active: boolean): void {
+    if (active === this.enabled) return
+    this.enabled = active
+    this.el.classList.toggle('is-active', active)
+    if (!active) {
+      this.steerId = null
+      this.boostIds.clear()
+      this.base.classList.remove('is-on')
+      this.boostBtn.classList.remove('is-on')
+      this.input.setTouchBoost(false)
     }
   }
 }
