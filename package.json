@@ -10,7 +10,7 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "multiplayer:server": "node server/index.mjs",
-    "multiplayer:test": "node --test server/room.test.mjs",
+    "multiplayer:test": "node --test server/*.test.mjs",
     "smoke": "node scripts/smoke.mjs",
     "manus:build-source": "tsc --noEmit && vite build && node scripts/check-size.mjs"
   },

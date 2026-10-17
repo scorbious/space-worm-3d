@@ -188,7 +188,7 @@ function segDistance(px: number, pz: number, ax: number, az: number, bx: number,
 
 const wrapAngle = (a: number) => Math.atan2(Math.sin(a), Math.cos(a))
 
-export type SimOptions = { mode: Mode; seed?: number; playerName: string; playerSkin: string; playerColor?: WormColor; headStyle?: HeadStyle; bots?: number }
+export type SimOptions = { mode: Mode; seed?: number; playerName: string; playerSkin: string; playerColor?: WormColor; headStyle?: HeadStyle; bots?: number; networkOnly?: boolean }
 
 export class Sim {
   readonly mode: Mode
@@ -233,10 +233,11 @@ export class Sim {
     this.mode = opts.mode
     this.environmentOffset = Math.abs(opts.seed ?? Math.floor(Math.random() * 10000)) % 6
     this.random = rng(opts.seed ?? (Math.random() * 2 ** 31) | 0)
-    this.buildHazards()
+    if (!opts.networkOnly) this.buildHazards()
     this.player = this.createWorm(opts.playerName, true, opts.mode === 'team' ? 0 : -1, opts.playerSkin)
     this.player.color = validColor(opts.playerColor)
     this.player.headStyle = validHead(opts.headStyle)
+    if (opts.networkOnly) return // NetworkSim only hydrates server state; no bots, hazards or local food.
     if (opts.mode === 'team') {
       this.matchLeft = CONFIG.team.seconds
       for (let i = 0; i < 5; i++) this.createWorm(this.botName(), false, 0, this.randomSkin())

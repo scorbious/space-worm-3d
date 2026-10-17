@@ -58,7 +58,7 @@ LB sprint, Start pause. Touch: left-side stick, right-side drag to look, JUMP / 
 
 ## Multiplayer 3 v 3
 
-The game includes a private-room lobby for three blue players versus three orange players. One room
+The game includes server-authoritative private matches for three blue players versus three orange players. One room
 generates two invitation links, one for each team. The browser client reads
 `public/multiplayer/bootstrap.json` and connects to an authoritative Node.js + `ws` service at
 `wss://.../ws` when configured. GitHub Pages serves the client but does not run a WebSocket service;
@@ -67,10 +67,16 @@ the server must be deployed separately and its exact public origin placed in the
 Run the local service with:
 
 ```bash
-pnpm multiplayer:server
+ALLOWED_ORIGINS=http://127.0.0.1:3000,http://localhost:3000 DEV_ALLOW_SMALL_MATCH=1 pnpm multiplayer:server
 ```
 
 Then run the client with `VITE_MULTIPLAYER_URL=ws://127.0.0.1:8787/ws pnpm dev`.
+Use separate browser contexts for Blue and Orange, ready both, then host-start. Production still
+requires six ready connected players; the explicit development flag allows smaller teams and is
+disabled by `NODE_ENV=production`. The v2 server owns movement, food, combat, respawn, timer and scores;
+the online client only renders snapshots and sends intent. Existing local modes and saves are unchanged.
+See [multiplayer setup, protocol and limits](docs/multiplayer.md). No public WebSocket server is
+deployed or configured by this change; the checked-in bootstrap intentionally has an empty URL.
 
 ## Credits
 

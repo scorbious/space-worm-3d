@@ -1,6 +1,7 @@
 import { randomBytes } from 'node:crypto'
+import { Match, PROTOCOL } from './match.mjs'
 
-export const PROTOCOL = 'spaceworm-3v3-v1'
+export { PROTOCOL }
 export const TEAMS = ['blue', 'red']
 export const TEAM_SIZE = 3
 export const RECONNECT_GRACE_MS = 60_000
@@ -29,10 +30,12 @@ export function cleanSkin(value) {
 }
 
 export class Room {
-  constructor(code) {
+  constructor(code, options = {}) {
     this.code = code
     this.createdAt = Date.now()
     this.lastActivity = Date.now()
+    this.options = options
+    this.match = null
     this.phase = 'waiting'
     this.hostId = ''
     this.seq = 0
@@ -53,7 +56,11 @@ export class Room {
   }
 
   isReadyToStart() {
-    return TEAMS.every(team => this.seats[team].every(player => player && player.ready && player.socket))
+    const minimum = this.options.allowSmallMatch ? 1 : TEAM_SIZE
+    return this.phase === 'waiting' && TEAMS.every(team => {
+      const seated = this.seats[team].filter(Boolean)
+      return seated.length >= minimum && seated.every(player => player.ready && player.socket)
+    })
   }
 
   claim(socket, desiredTeam, resumeToken) {
@@ -64,13 +71,14 @@ export class Room {
         player.socket = socket
         player.disconnectedAt = 0
         socket.player = player
+        this.match?.setConnected(player.id, true)
         return player
       }
     }
 
     const team = TEAMS.includes(desiredTeam) ? desiredTeam : 'blue'
     const slot = this.seats[team].findIndex(player => !player)
-    if (slot < 0) {
+    if (slot < 0 || this.phase !== 'waiting') {
       this.observers.add(socket)
       socket.player = null
       return null
@@ -82,6 +90,8 @@ export class Room {
       slot,
       name: 'Stargazer',
       skin: 'nebula',
+      color: 'skin',
+      headStyle: 'round',
       ready: false,
       socket,
       disconnectedAt: 0,
@@ -93,22 +103,26 @@ export class Room {
     return player
   }
 
-  setProfile(player, name, skin) {
-    if (!player) return
+  setProfile(player, name, skin, color, headStyle) {
+    if (!player || this.phase !== 'waiting') return
     player.name = cleanName(name)
     player.skin = cleanSkin(skin)
+    player.color = ['skin', 'cyan', 'pink', 'gold', 'green', 'violet', 'orange', 'ice', 'dark'].includes(color) ? color : 'skin'
+    player.headStyle = ['round', 'crystal', 'robot', 'comet', 'dragon', 'cat', 'cyclops', 'manta'].includes(headStyle) ? headStyle : 'round'
     this.touch()
   }
 
   setReady(player, value) {
-    if (!player || this.phase !== 'waiting') return false
-    player.ready = Boolean(value)
+    if (!player || this.phase !== 'waiting' || typeof value !== 'boolean') return false
+    player.ready = value
     this.touch()
     return true
   }
 
   start(player) {
     if (!player || player.id !== this.hostId || this.phase !== 'waiting' || !this.isReadyToStart()) return false
+    const seed = [...this.code].reduce((a, c) => Math.imul(a, 31) + c.charCodeAt(0), 7) >>> 0
+    this.match = new Match([...this.players.values()], { seed, ...this.options.matchOptions })
     this.phase = 'running'
     this.touch()
     return true
@@ -116,20 +130,34 @@ export class Room {
 
   release(socket) {
     this.touch()
-    if (socket.player) {
+    if (socket.player && socket.player.socket === socket) {
       socket.player.socket = null
       socket.player.disconnectedAt = Date.now()
+      this.match?.setConnected(socket.player.id, false)
     } else {
       this.observers.delete(socket)
     }
   }
 
+  leave(socket) {
+    const player = socket.player
+    if (player && player.socket === socket) this.removePlayer(player)
+    this.observers.delete(socket)
+    socket.player = null
+    this.touch()
+  }
+
+  removePlayer(player) {
+    this.seats[player.team][player.slot] = null
+    this.players.delete(player.id)
+    this.match?.removePlayer(player.id)
+    if (player.id === this.hostId) this.hostId = [...this.players.values()].find(p => p.socket)?.id || [...this.players.keys()][0] || ''
+  }
+
   expireDisconnected(now = Date.now()) {
     for (const player of [...this.players.values()]) {
       if (!player.socket && player.disconnectedAt && now - player.disconnectedAt > RECONNECT_GRACE_MS) {
-        this.seats[player.team][player.slot] = null
-        this.players.delete(player.id)
-        if (player.id === this.hostId) this.hostId = [...this.players.values()][0]?.id || ''
+        this.removePlayer(player)
       }
     }
     return this.players.size === 0 && this.observers.size === 0 && now - this.lastActivity > 10 * 60_000
@@ -155,7 +183,8 @@ export class Room {
       teams: teamState,
       spectators: this.observers.size,
       readyToStart: this.isReadyToStart(),
-      round: { stage: this.stage, arenaRadius: this.arenaRadius, scores: { ...this.scores } },
+      development: Boolean(this.options.allowSmallMatch),
+      round: { stage: this.match?.stage ?? this.stage, arenaRadius: this.match?.arenaRadius ?? this.arenaRadius, scores: { ...(this.match?.scores ?? this.scores) } },
     }
   }
 }

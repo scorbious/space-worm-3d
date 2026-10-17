@@ -1,4 +1,5 @@
 import './styles/main.css'
+import './styles/online.css'
 import { assets } from './engine/assets'
 import { Audio } from './engine/audio'
 import { I18n, resolveLocale } from './engine/i18n'
@@ -49,6 +50,8 @@ async function boot(): Promise<void> {
   let starting = false
   const play = async (mode: Mode) => {
     if (!game || starting) return
+    network?.leave()
+    ui.clearMultiplayer()
     unlockAudio()
     window.clearTimeout(deathTimer)
     // The arena needs stage 1 (backdrop, core textures, SFX). Usually it has streamed in while
@@ -78,7 +81,7 @@ async function boot(): Promise<void> {
     ui.show('pause')
   }
   const resume = () => {
-    if (game?.mode !== 'paused') return
+    if (!game || (!game.isOnline && game.mode !== 'paused')) return
     game.resume()
     ui.show((game.mode as string) === 'dead' && game.sim.mode === 'ffa' ? 'death' : 'hud')
     loop.resetAccumulator()
@@ -96,6 +99,8 @@ async function boot(): Promise<void> {
     pause,
     quit: () => {
       window.clearTimeout(deathTimer)
+      network?.leave()
+      ui.clearMultiplayer()
       game?.toTitle()
       audio.setScene('title')
       ui.show('title')
@@ -119,7 +124,7 @@ async function boot(): Promise<void> {
       game?.seenHints.clear()
     },
     multiplayer: action => {
-      const profile = () => ({ name: save.data.playerName, skin: save.data.skin })
+      const profile = () => ({ name: save.data.playerName, skin: save.data.skin, color: save.data.color, headStyle: save.data.headStyle })
       if (!network) return
       if (action === 'open') {
         ui.show('multiplayer')
@@ -130,22 +135,51 @@ async function boot(): Promise<void> {
       } else if (action === 'join-blue' || action === 'join-red') {
         const room = document.querySelector<HTMLInputElement>('[data-mp-room]')?.value.trim().toUpperCase() || ''
         if (!/^[A-Z0-9]{5,8}$/.test(room)) {
-          ui.setMultiplayerStatus('error', 'Enter a valid room code.')
+          ui.setMultiplayerStatus('error', 'invalid_room')
           return
         }
         ui.show('multiplayer')
         void network.join(room, action.endsWith('red') ? 'red' : 'blue', profile()).catch(error => ui.setMultiplayerStatus('error', String((error as Error).message)))
       } else if (action === 'ready') network.ready(true)
       else if (action === 'start') network.start()
-      else if (action === 'copy-blue' || action === 'copy-red') void network.copyInvite(action.endsWith('red') ? 'red' : 'blue').then(() => ui.toast('multiplayer.copied', {}, 'good')).catch(() => ui.setMultiplayerStatus('error', 'Clipboard permission was denied.'))
-      else if (action === 'leave') network.leave()
+      else if (action === 'copy-blue' || action === 'copy-red') void network.copyInvite(action.endsWith('red') ? 'red' : 'blue').then(() => ui.toast('multiplayer.copied', {}, 'good')).catch(() => ui.setMultiplayerStatus('error', 'clipboard_denied'))
+      else if (action === 'leave') {
+        network.leave(); ui.clearMultiplayer()
+        if (game?.isOnline) game.toTitle()
+        ui.show('title')
+      }
     },
   })
   uiRef = ui
   network = new MultiplayerClient({
     onWelcome: welcome => ui.setMultiplayerWelcome(welcome.team, welcome.host),
-    onState: state => ui.setMultiplayerState(state),
+    onState: state => {
+      ui.setMultiplayerState(state)
+      if (state.phase === 'running' && ui.screen === 'multiplayer') {
+        ui.showOnlineLoading()
+        void assets.ensure(1)
+      }
+    },
     onStatus: (status, detail) => ui.setMultiplayerStatus(status, detail),
+    onMatchSnapshot: snapshot => {
+      if (!game || !network) return
+      if (!game.isOnline) {
+        window.clearTimeout(deathTimer)
+        tuning.activate('run')
+        game.startOnline(snapshot, network.currentPlayerId, (angle, boost) => network?.sendInput(angle, boost))
+        ui.show('hud'); audio.play('start')
+      } else game.applyOnlineSnapshot(snapshot)
+      ui.onlineSnapshotReady()
+    },
+    onMatchEnd: snapshot => {
+      if (!game || !network) return
+      if (!game.isOnline) game.startOnline(snapshot, network.currentPlayerId, (angle, boost) => network?.sendInput(angle, boost))
+      else game.applyOnlineSnapshot(snapshot)
+      ui.showOnlineMatch(snapshot)
+      audio.setScene('results')
+      audio.play(snapshot.winner === network.currentTeam ? 'win' : 'lose')
+    },
+    onPing: milliseconds => { if (game) game.onlinePing = milliseconds },
   })
   ui.show('boot')
   applySettings(save.data)
@@ -232,10 +266,12 @@ async function boot(): Promise<void> {
     render: (alpha, frameSeconds) => {
       input.update()
       if (input.consume('pause') && !ui.back()) {
-        if (g.mode === 'playing' || (g.mode === 'dead' && ui.screen === 'hud')) pause()
+        if (g.isOnline && ui.screen === 'pause') resume()
+        else if (g.mode === 'playing' || (g.mode === 'dead' && ui.screen === 'hud')) pause()
         else if (g.mode === 'paused' && ui.screen === 'pause') resume()
       }
       ui.frame(frameSeconds)
+      g.onlineControlsEnabled = ui.screen === 'hud' && network?.isConnected === true && !document.hidden
       loop.paused = g.mode === 'paused'
       g.render(alpha, frameSeconds)
       if (ui.screen === 'hud') ui.updateHud(g.hud(), g, frameSeconds, save.data.reducedMotion)
@@ -255,7 +291,7 @@ async function boot(): Promise<void> {
     const invite = new URLSearchParams(location.search).get('match')
     if (invite) {
       ui.show('multiplayer')
-      if (network) void network.joinFromLocation({ name: save.data.playerName, skin: save.data.skin }).catch(error => ui.setMultiplayerStatus('unavailable', String((error as Error).message)))
+      if (network) void network.joinFromLocation({ name: save.data.playerName, skin: save.data.skin, color: save.data.color, headStyle: save.data.headStyle }).catch(error => ui.setMultiplayerStatus('unavailable', String((error as Error).message)))
     }
   }, 250)
   // Debug/test hook (read-only use): smoke tests inspect state through it.

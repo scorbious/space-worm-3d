@@ -20,6 +20,8 @@ import type { EnvironmentId } from './environmentDefs'
 import { Sim, type DeathCause, type PlayerControl, type Worm } from './sim'
 import { View } from './view'
 import { gulpFeedback } from './faceFeedback'
+import { NetworkSim } from './networkSim'
+import type { OnlineSnapshot, Team } from '../net/multiplayer'
 
 export type GameMode = 'title' | 'playing' | 'paused' | 'dead' | 'ended'
 
@@ -97,6 +99,7 @@ export type HudState = {
   threatArrows: ThreatArrow[]
   /** A lethal hazard or rival is on the predicted path right now. */
   threatImminent: boolean
+  online?: { ping: number; players: number; total: number; score: number; team: Team | 'spectator' }
 }
 const HINT_ORDER: HintId[] = ['rival', 'edible', 'asteroid', 'gate', 'well', 'rim', 'bite']
 const projV = new THREE.Vector3()
@@ -113,6 +116,11 @@ export class Game {
   matchType: Mode = 'ffa'
   sim!: Sim
   readonly view = new View()
+  private networkSim: NetworkSim | null = null
+  private sendOnlineInput: ((angle: number, boost: boolean) => void) | null = null
+  onlineControlsEnabled = true
+  onlinePing = 0
+  get isOnline(): boolean { return this.networkSim !== null }
   private _reduced = false
   private cam = { x: 0, z: 0, h: CONFIG.camera.height, fov: CONFIG.camera.fov }
   private shake = 0
@@ -168,6 +176,8 @@ export class Game {
 
   // ─── flow ───────────────────────────────────────────────────────────────
   toTitle(): void {
+    this.networkSim = null
+    this.sendOnlineInput = null
     const p = this.profile()
     this.sim = new Sim({ mode: 'ffa', playerName: p.name, playerSkin: p.skin, playerColor: p.color, headStyle: p.headStyle })
     this.sim.player.alive = false
@@ -185,6 +195,8 @@ export class Game {
   }
 
   start(mode: Mode): void {
+    this.networkSim = null
+    this.sendOnlineInput = null
     const p = this.profile()
     this.matchType = mode
     this.sim = new Sim({ mode, playerName: p.name, playerSkin: p.skin, playerColor: p.color, headStyle: p.headStyle })
@@ -199,9 +211,51 @@ export class Game {
     this.hooks.lifeStart()
   }
 
+  startOnline(snapshot: OnlineSnapshot, playerId: string, sendInput: (angle: number, boost: boolean) => void): void {
+    this.networkSim = new NetworkSim(playerId)
+    this.sim = this.networkSim
+    this.sendOnlineInput = sendInput
+    this.matchType = 'team'
+    this.applyOnlineSnapshot(snapshot)
+    this.view.bind(this.sim)
+    this.snapCamera()
+    this.lastTarget = null
+    this.input.clearBoost()
+    this.audio.setEnvironmentMusic(this.sim.environment)
+    this.audio.setScene('arena')
+  }
+
+  applyOnlineSnapshot(snapshot: OnlineSnapshot): void {
+    const sim = this.networkSim
+    if (!sim) return
+    const events = sim.applyNetworkSnapshot(snapshot)
+    this.mode = snapshot.phase === 'ended' ? 'ended' : sim.player.alive ? 'playing' : 'dead'
+    for (const e of events) {
+      const player = snapshot.players.find(p => p.id === e.playerId)
+      const mine = e.playerId === sim.localPlayerId
+      const worm = sim.worms.find(w => w.id === (player ? 1 + player.slot + (player.team === 'red' ? 3 : 0) : -1))
+      if (e.type === 'eat' && e.x !== undefined && e.z !== undefined) {
+        if (this.near(e.x, e.z)) this.view.fx.bite(e.x, e.z, e.color ?? 0x5ef3ff, 0, mine)
+        if (worm) this.view.flashGulp(worm.id, 0.35)
+        if (mine) this.audio.play('eat')
+      } else if (e.type === 'death' && worm && player) {
+        this.view.fx.death(worm.xs, worm.zs, skinById(worm.skin).colors, worm.radius, mine)
+        const killer = snapshot.players.find(p => p.id === e.killerId)
+        this.hooks.feed({ killer: killer?.name ?? null, victim: player.name, cause: e.cause ?? 'worm',
+          involvesPlayer: mine || e.killerId === sim.localPlayerId, playerKilled: !mine && e.killerId === sim.localPlayerId })
+        if (mine) {
+          this.focus = { x: e.x ?? worm.xs[0], z: e.z ?? worm.zs[0] }
+          this.audio.play('death'); this.audio.setBoosting(false); this.hooks.flash('death')
+        } else if (e.killerId === sim.localPlayerId) this.audio.play('kill')
+      } else if (e.type === 'spawn' && mine) { this.lastTarget = null; this.input.clearBoost(); this.snapCamera() }
+    }
+    if (snapshot.phase === 'ended') { this.audio.setBoosting(false); this.audio.setScene('results') }
+    // Deliberately no lifeEnd/matchEnd save hooks: online scores never rewrite local progression.
+  }
+
   /** Free-for-all: continue in the same arena with a fresh worm. */
   respawn(): void {
-    if (this.mode !== 'dead' || this.sim.matchOver) return
+    if (this.isOnline || this.mode !== 'dead' || this.sim.matchOver) return
     const p = this.profile()
     this.sim.player.skin = p.skin
     this.sim.player.color = validColor(p.color)
@@ -215,10 +269,12 @@ export class Game {
   }
 
   pause(): void {
+    if (this.isOnline) { this.onlineControlsEnabled = false; this.input.clearBoost(); return }
     if (this.mode === 'playing' || this.mode === 'dead') this.mode = 'paused'
   }
 
   resume(): void {
+    if (this.isOnline) { this.onlineControlsEnabled = true; this.input.clearBoost(); return }
     if (this.mode !== 'paused') return
     this.mode = this.sim.player.alive ? 'playing' : 'dead'
     this.input.clearBoost()
@@ -237,6 +293,7 @@ export class Game {
 
   // ─── simulation ─────────────────────────────────────────────────────────
   step(dt: number): void {
+    if (this.networkSim) { this.stepOnline(dt); return }
     if (this.mode === 'paused') return
     const environmentDt = this.mode === 'playing' || this.mode === 'dead' ? dt : 0
     // Hit-stop: a few frames of slow motion sell big impacts.
@@ -259,6 +316,17 @@ export class Game {
       }
     }
     if (this.mode === 'playing') this.warnings(dt)
+  }
+
+  private stepOnline(dt: number): void {
+    if (!this.networkSim || this.mode === 'ended') return
+    this.networkSim.interpolate()
+    const p = this.sim.player
+    if (!p.isPlayer || !p.alive) return
+    const control = this.onlineControlsEnabled ? this.control() : { targetAngle: p.angle, turn: 0, boost: false }
+    // Aim ahead of the interpolated heading; the server still clamps the actual turn rate.
+    const angle = control.targetAngle ?? p.angle + control.turn * 2.8 * Math.max(0.25, dt)
+    this.sendOnlineInput?.(angle, control.boost)
   }
 
   private control(): PlayerControl {
@@ -567,6 +635,7 @@ export class Game {
 
   render(_alpha: number, frameSeconds: number): void {
     const dt = Math.min(0.1, frameSeconds)
+    this.networkSim?.interpolate()
     const sim = this.sim
     const P = sim.player
     if (this.mode === 'playing' || this.mode === 'dead' || this.mode === 'paused') this.audio.setEnvironmentMusic(sim.environment)
@@ -632,7 +701,7 @@ export class Game {
   private updateThreats(dt: number, fx: number, fz: number): void {
     const sim = this.sim
     const P = sim.player
-    if (this.mode !== 'playing' || !P?.alive) {
+    if (this.isOnline || this.mode !== 'playing' || !P?.alive) {
       this.threats = null
       this.view.threats = null
       this.hadFocus = false
@@ -722,9 +791,14 @@ export class Game {
       stacks: P.stacks,
       teamScores: sim.teamScores(),
       matchLeft: sim.matchLeft,
+      ...(this.networkSim?.latest ? { online: {
+        ping: this.onlinePing, players: this.networkSim.latest.players.filter(p => p.connected).length,
+        total: this.networkSim.latest.players.length, score: this.networkSim.playerScore,
+        team: this.networkSim.latest.players.find(p => p.id === this.networkSim?.localPlayerId)?.team ?? 'spectator',
+      } } : {}),
       leaders,
       rimDanger: P.alive ? Math.max(0, Math.min(1, 1 - (sim.radius - Math.hypot(P.xs[0], P.zs[0])) / 14)) : 0,
-      respawnIn: this.mode === 'dead' && sim.mode === 'team' ? Math.max(0, this.respawnTimer) : 0,
+      respawnIn: this.networkSim ? this.networkSim.respawnIn : this.mode === 'dead' && sim.mode === 'team' ? Math.max(0, this.respawnTimer) : 0,
       combo: P.alive ? P.combo : 0,
       comboLeft: P.alive && P.combo > 0 ? Math.max(0, P.comboTimer / CONFIG.feast.comboWindow) : 0,
       crowned: P.alive && sim.crownId === P.id,

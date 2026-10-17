@@ -12,7 +12,7 @@ import type { FeedItem, Game, HudState, LifeResult, MatchResult, ThreatArrow } f
 import { glyphSvg, type GlyphId } from '../game/glyphs'
 import type { HintId } from '../game/threats'
 import { formatClock, type Mode, type Records } from '../game/rules'
-import type { LobbyState, MultiplayerStatus, PlayerSeat } from '../net/multiplayer'
+import type { LobbyState, MultiplayerStatus, OnlineMatchEnd, PlayerSeat } from '../net/multiplayer'
 import { icon } from './icons'
 import { Minimap } from './minimap'
 import { Sparks } from './sparks'
@@ -60,6 +60,8 @@ export class Ui {
   private bannerTimer = 0
   private lastDeath: DeathInfo | null = null
   private lastMatch: { result: MatchResult; bestLife: number; earned: number } | null = null
+  private lastOnlineMatch: OnlineMatchEnd | null = null
+  private onlineWaiting = false
   private hudCache = new Map<string, string>()
   private sparks!: Sparks
   private calloutsEl!: HTMLElement
@@ -166,6 +168,11 @@ export class Ui {
         </div>
         <div class="hud-bl">
           <canvas class="minimap" data-i18n-title="hud.minimap"></canvas>
+          <div class="online-panel panel" data-bind="onlinePanel" hidden>
+            <p data-bind="onlineStatus" role="status" aria-live="polite"></p>
+            <p data-bind="onlineStats"></p>
+            <button class="btn ghost small" data-action="mp-leave">${T('multiplayer.leaveMatch')}</button>
+          </div>
         </div>
         <div class="hud-bc">
           <div class="effects" data-bind="effects">
@@ -478,7 +485,8 @@ export class Ui {
     if (this.screen === 'howto') this.renderHowto()
     if (this.screen === 'multiplayer') this.renderMultiplayer()
     if (this.screen === 'death' && this.lastDeath) this.renderDeath()
-    if (this.screen === 'match' && this.lastMatch) this.renderMatch()
+    if (this.screen === 'match' && this.lastOnlineMatch) this.renderOnlineMatch()
+    else if (this.screen === 'match' && this.lastMatch) this.renderMatch()
     if (this.screen === 'multiplayer') this.renderMultiplayer()
   }
 
@@ -564,8 +572,24 @@ export class Ui {
 
   setMultiplayerStatus(status: MultiplayerStatus, detail = ''): void {
     this.lobbyStatus = status
-    this.lobbyDetail = detail
+    const known = ['multiplayer_unavailable', 'invalid_room', 'clipboard_denied', 'protocol_mismatch', 'seat_replaced',
+      'connection_rejected', 'resume_expired', 'invalid_server_message', 'room_create_failed', 'not_ready', 'not_ready_to_start', 'invalid_input', 'invalid_message']
+    this.lobbyDetail = detail ? `multiplayer.errors.${known.includes(detail) ? detail : 'connection_rejected'}` : ''
     if (this.screen === 'multiplayer') this.renderMultiplayer()
+  }
+
+  clearMultiplayer(): void {
+    this.lobbyState = null; this.lobbyHost = false; this.lobbyDetail = ''; this.onlineWaiting = false
+    this.lastOnlineMatch = null
+    this.root.querySelector<HTMLElement>('[data-bind="onlinePanel"]')!.hidden = true
+  }
+
+  showOnlineLoading(): void { this.onlineWaiting = true; this.show('hud') }
+  onlineSnapshotReady(): void { this.onlineWaiting = false }
+
+  private multiplayerStatusText(): string {
+    const key = this.onlineWaiting && this.lobbyStatus === 'connected' ? 'matchLoading' : this.lobbyStatus
+    return this.t(`multiplayer.${key}`)
   }
 
   setMultiplayerWelcome(team: 'blue' | 'red' | 'spectator', host: boolean): void {
@@ -582,29 +606,25 @@ export class Ui {
   private renderMultiplayer(): void {
     const el = this.root.querySelector<HTMLElement>('[data-bind="multiplayer"]')
     if (!el) return
-    const statusText = this.lobbyStatus === 'connected' ? this.t('multiplayer.connected')
-      : this.lobbyStatus === 'connecting' ? this.t('multiplayer.connecting')
-        : this.lobbyStatus === 'loading' ? this.t('multiplayer.loading')
-          : this.lobbyStatus === 'unavailable' ? this.t('multiplayer.unavailable')
-            : this.lobbyStatus === 'error' ? this.t('multiplayer.error') : this.t('multiplayer.idle')
+    const statusText = this.multiplayerStatusText()
     const s = this.lobbyState
     const seat = (player: PlayerSeat | null) => player
       ? `<li class="seat ${player.connected ? 'online' : 'offline'}"><b>${esc(player.name)}</b><span>${player.ready ? this.t('multiplayer.ready') : this.t('multiplayer.notReady')}</span></li>`
       : `<li class="seat empty">${this.t('multiplayer.openSeat')}</li>`
     const teamCard = (team: 'blue' | 'red', label: string) => {
       const players = s?.teams[team] ?? [null, null, null]
-      return `<article class="team-lobby ${team}"><header><h3>${label}</h3><b>${players.filter(Boolean).length}/3</b></header><ol>${players.map(player => seat(player)).join('')}</ol>${s ? `<button class="btn ghost small" data-action="mp-copy-${team}">${this.t('multiplayer.copyInvite')}</button><code class="invite-code">${esc(this.lobbyRoomLink(team))}</code>` : ''}</article>`
+      return `<article class="team-lobby ${team}"><header><h3>${label}</h3><b>${players.filter(Boolean).length}/3</b></header><ol>${players.map(player => seat(player)).join('')}</ol>${s ? `<button class="btn ghost small" data-action="mp-copy-${team}">${this.t('multiplayer.copyInvite')}</button><a class="invite-code" href="${esc(this.lobbyRoomLink(team))}" target="_blank" rel="noopener">${esc(this.lobbyRoomLink(team))}</a>` : ''}</article>`
     }
     const hasRoom = Boolean(s)
     const roomCode = s?.room ?? ''
     el.innerHTML = `
       <header class="lobby-head"><div><p class="eyebrow">${this.t('multiplayer.eyebrow')}</p><h2>${this.t('multiplayer.title')}</h2></div>${roomCode ? `<span class="room-code">${esc(roomCode)}</span>` : ''}</header>
-      <p class="lobby-status ${this.lobbyStatus}">${statusText}${this.lobbyDetail ? ` · ${esc(this.lobbyDetail)}` : ''}</p>
-      ${hasRoom ? `<p class="lobby-instruction">${this.t(s?.phase === 'running' ? 'multiplayer.running' : 'multiplayer.inviteHint')}</p>
+      <p class="lobby-status ${this.lobbyStatus}">${statusText}${this.lobbyDetail ? ` · ${esc(this.t(this.lobbyDetail))}` : ''}</p>
+      ${hasRoom ? `<p class="lobby-instruction">${this.t(s?.phase === 'running' ? 'multiplayer.running' : s?.development ? 'multiplayer.testHint' : 'multiplayer.inviteHint')}</p>
         <div class="team-lobby-grid">${teamCard('blue', this.t('hud.team.blue'))}${teamCard('red', this.t('hud.team.orange'))}</div>
         <div class="lobby-actions">
           ${s?.phase === 'waiting' && this.lobbyTeam !== 'spectator' ? `<button class="btn primary" data-action="mp-ready">${this.t('multiplayer.readyUp')}</button>` : ''}
-          ${s?.phase === 'waiting' && this.lobbyHost ? `<button class="btn primary" data-action="mp-start" ${s.readyToStart ? '' : 'disabled'}>${this.t('multiplayer.start')}</button>` : ''}
+          ${s?.phase === 'waiting' && this.lobbyHost ? `<button class="btn primary" data-action="mp-start" ${s.readyToStart ? '' : 'disabled'}>${this.t(s.development ? 'multiplayer.startTest' : 'multiplayer.start')}</button>` : ''}
           <button class="btn ghost" data-action="mp-leave">${this.t('multiplayer.leave')}</button>
         </div>`
         : `<p class="lobby-instruction">${this.t('multiplayer.description')}</p>
@@ -683,9 +703,28 @@ export class Ui {
   }
 
   showMatch(result: MatchResult, bestLife: number, earned: number): void {
+    this.lastOnlineMatch = null
     this.lastMatch = { result, bestLife, earned }
     this.renderMatch()
     this.show('match')
+  }
+
+  showOnlineMatch(result: OnlineMatchEnd): void {
+    this.lastOnlineMatch = result; this.lastMatch = null; this.onlineWaiting = false
+    this.renderOnlineMatch(); this.show('match')
+  }
+
+  private renderOnlineMatch(): void {
+    const result = this.lastOnlineMatch!
+    const title = result.winner === 'draw' ? 'match.draw' : this.lobbyTeam === 'spectator' ? 'multiplayer.roundEnd'
+      : result.winner === this.lobbyTeam ? 'match.victory' : 'match.defeat'
+    const el = this.root.querySelector<HTMLElement>('[data-bind="match"]')!
+    el.innerHTML = `<p class="eyebrow">${esc(this.t('multiplayer.roundEnd'))}</p><h2>${esc(this.t(title))}</h2>
+      <div class="online-result-scores"><span>${esc(this.t('hud.team.blue'))} <b>${this.i18n.n(result.scores.blue)}</b></span>
+      <span>${esc(this.t('hud.team.orange'))} <b>${this.i18n.n(result.scores.red)}</b></span></div>
+      <p>${esc(this.t('multiplayer.resultsHint'))}</p><ol class="online-results">${[...result.players].sort((a, b) => b.score - a.score).map(p =>
+        `<li class="${p.team}"><b>${esc(p.name)}</b><span>${esc(this.t('multiplayer.playerResult', { score: this.i18n.n(p.score), kills: p.kills }))}</span></li>`).join('')}</ol>
+      <button class="btn primary" data-action="mp-leave">${esc(this.t('multiplayer.leaveMatch'))}</button>`
   }
 
   private renderMatch(): void {
@@ -721,6 +760,17 @@ export class Ui {
 
   updateHud(h: HudState, game: Game, dt: number, reduced: boolean): void {
     const hud = this.root.querySelector<HTMLElement>('[data-screen="hud"]')!
+    const onlinePanel = hud.querySelector<HTMLElement>('[data-bind="onlinePanel"]')!
+    onlinePanel.hidden = !h.online && !this.onlineWaiting
+    if (!onlinePanel.hidden) {
+      const status = `${this.multiplayerStatusText()}${this.lobbyDetail ? ` · ${this.t(this.lobbyDetail)}` : ''}`
+      this.setIf('onlineStatus', status, () => this.bind('onlineStatus', status))
+      const stats = h.online ? this.t('multiplayer.hud', {
+        ping: h.online.ping, players: h.online.players, total: h.online.total, score: this.i18n.n(h.online.score),
+        team: this.t(h.online.team === 'spectator' ? 'multiplayer.spectator' : h.online.team === 'blue' ? 'hud.team.blue' : 'hud.team.orange'),
+      }) : ''
+      this.setIf('onlineStats', stats, () => this.bind('onlineStats', stats))
+    }
     this.renderArrows(hud, h.threatArrows)
     hud.classList.toggle('threat-imminent', h.threatImminent)
     const team = game.sim.mode === 'team'

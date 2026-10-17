@@ -1,0 +1,17 @@
+/* Online-only panels: local HUD layout is unchanged. */
+.online-panel { margin-top: 8px; max-width: 260px; padding: 10px 12px; font-size: 12px; line-height: 1.5; pointer-events: auto; }
+.online-panel[hidden] { display: none; }
+.online-panel p { margin: 0 0 6px; overflow-wrap: anywhere; }
+.online-panel [data-bind="onlineStatus"] { color: #8fe6ff; }
+.online-panel .btn { min-height: 36px; padding: 6px 10px; }
+.online-result-scores { display: flex; justify-content: space-around; gap: 16px; margin: 20px 0; }
+.online-result-scores b { display: block; font-size: 32px; }
+.online-results { list-style: none; margin: 14px 0 22px; padding: 0; }
+.online-results li { display: flex; justify-content: space-between; gap: 12px; border-inline-start: 3px solid #5ef3ff; padding: 8px 12px; margin: 4px 0; background: rgba(255,255,255,.04); }
+.online-results li.red { border-color: #ff8a5c; }
+.online-results span { color: #c9c1e5; font-size: 13px; }
+@media (max-width: 700px) {
+  .online-panel { max-width: 160px; padding: 6px 8px; font-size: 10px; }
+  .online-panel .btn { font-size: 11px; }
+  .online-results li { flex-wrap: wrap; }
+}
