@@ -1,16 +1,25 @@
-/** Decorative scenery only: it never changes collision, lights, global fog or arena readability. */
+/** Decorative scenery only: never changes collision, lighting or arena navigational lines. */
 import * as THREE from 'three'
 import type { Quality } from '../engine/save'
 import { ENVIRONMENTS, type EnvironmentId } from './environmentDefs'
 
 const COUNT = 48
+export const ENVIRONMENT_FADE_SECONDS = 3
 const matrix = new THREE.Matrix4()
 const position = new THREE.Vector3()
 const rotation = new THREE.Quaternion()
 const scale = new THREE.Vector3()
 const UP = new THREE.Vector3(0, 1, 0)
-const BACKGROUNDS: Record<EnvironmentId, number> = { forest: 0x041513, ocean: 0x041322, dunes: 0x21130d, solar: 0x24090b, aurora: 0x090c24, crystal: 0x160c2b }
+const PALETTES: Record<EnvironmentId, { base: number; glow: number; mist: number; anchor: [number, number] }> = {
+  forest: { base: 0x061917, glow: 0x163e31, mist: 0x73ba79, anchor: [-170, 120] },
+  ocean: { base: 0x061728, glow: 0x155266, mist: 0x9bdfed, anchor: [150, -170] },
+  dunes: { base: 0x271910, glow: 0x634624, mist: 0xd7a868, anchor: [-160, -130] },
+  solar: { base: 0x280e15, glow: 0x77381b, mist: 0xffab42, anchor: [130, 100] },
+  aurora: { base: 0x10132b, glow: 0x264a46, mist: 0xa1efd9, anchor: [-100, 160] },
+  crystal: { base: 0x1b112f, glow: 0x51366b, mist: 0xbb9eff, anchor: [170, 60] },
+}
 
+/** All shapes are allocated once. Transitions blend uniforms and six bounded scenery weights. */
 export class ArenaEnvironment {
   readonly group = new THREE.Group()
   quality: Quality = 'high'
@@ -19,70 +28,87 @@ export class ArenaEnvironment {
   private trunks: THREE.InstancedMesh
   private trees: THREE.InstancedMesh
   private crystals: THREE.InstancedMesh
+  private swells: THREE.InstancedMesh
+  private dunes: THREE.InstancedMesh
+  private sun: THREE.Group
+  private aurora: THREE.Group
   private particles: THREE.Points
   private particleMaterial: THREE.ShaderMaterial
   private kind: EnvironmentId | null = null
+  private changedAt = 0
+  private weights = Array<number>(6).fill(0)
+  private fromWeights = Array<number>(6).fill(0)
+  private background = new THREE.Color()
+  private fromBase = new THREE.Color()
+  private fromGlow = new THREE.Color()
+  private fromMist = new THREE.Color()
+  private targetBase = new THREE.Color()
+  private targetGlow = new THREE.Color()
+  private targetMist = new THREE.Color()
+  private fromAnchor = new THREE.Vector2()
+  private targetAnchor = new THREE.Vector2()
 
   constructor() {
     this.material = new THREE.ShaderMaterial({
-      uniforms: { uTime: { value: 0 }, uKind: { value: 0 }, uRadius: { value: 128 } },
+      uniforms: { uBase: { value: new THREE.Color() }, uGlow: { value: new THREE.Color() }, uAnchor: { value: new THREE.Vector2() } },
       vertexShader: 'varying vec2 vP; void main(){ vP = position.xy; gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0); }',
-      fragmentShader: `varying vec2 vP; uniform float uTime; uniform float uKind; uniform float uRadius;
-        float noise(vec2 p){ return sin(p.x * 0.07 + sin(p.y * 0.045)) * cos(p.y * 0.053 - sin(p.x * 0.03)); }
+      // No textures, noise, waves, ribbons, grids or repeating patterns on the backdrop.
+      fragmentShader: `varying vec2 vP; uniform vec3 uBase; uniform vec3 uGlow; uniform vec2 uAnchor;
         void main(){
-          vec2 p = vP; float t = uTime; float d = length(p); vec3 c; float alpha = 0.65;
-          if(uKind < 0.5){
-            float moss = noise(p + vec2(t * 0.9,0.0));
-            float mist = 0.5 + 0.5 * sin(p.x * 0.013 + p.y * 0.022 + t * 0.15);
-            c = mix(vec3(0.015,0.06,0.045),vec3(0.045,0.19,0.13),moss * 0.5 + 0.5) + vec3(0.03,0.06,0.065) * mist;
-          } else if(uKind < 1.5){
-            float waves = sin(p.x * 0.08 + t * 1.2 + sin(p.y * 0.04 - t * 0.6)) + sin(p.y * 0.13 - t * 1.5) * 0.4;
-            float foam = pow(max(0.0,waves * 0.65),6.0);
-            float reflection = exp(-abs(p.x + 50.0) * 0.008) * (0.4 + 0.6 * max(0.0,waves));
-            c = mix(vec3(0.01,0.05,0.11),vec3(0.025,0.21,0.27),waves * 0.25 + 0.5) + vec3(0.11,0.22,0.24) * foam + vec3(0.12,0.1,0.065) * reflection;
-          } else if(uKind < 2.5){
-            float dunes = sin(p.y * 0.045 + sin(p.x * 0.014) * 2.5 + t * 0.035);
-            float sand = noise(p * 4.0 + vec2(t * 3.0,0.0));
-            c = mix(vec3(0.12,0.065,0.025),vec3(0.38,0.235,0.095),dunes * 0.5 + 0.5) + sand * 0.025;
-          } else if(uKind < 3.5){
-            float a = atan(p.y,p.x); float surface = noise(p + vec2(sin(t * 0.1),cos(t * 0.1)) * 10.0);
-            float corona = pow(max(0.0,sin(a * 23.0 + t * 0.2 + surface * 1.8)),4.0);
-            float disk = 1.0 - smoothstep(uRadius * 1.65,uRadius * 2.0,d);
-            c = mix(vec3(0.13,0.012,0.02),vec3(0.6,0.16,0.025),disk) + vec3(0.15,0.065,0.01) * (surface * 0.5 + 0.5 + corona * 0.4);
-          } else if(uKind < 4.5){
-            float ribbon = sin(p.y * 0.016 + sin(p.x * 0.011 + t * 0.12) * 2.2 + t * 0.07);
-            float veil = pow(0.5 + 0.5 * ribbon,3.0);
-            c = mix(vec3(0.015,0.02,0.07),vec3(0.055,0.25,0.19),veil) + vec3(0.09,0.025,0.13) * (noise(p) * 0.5 + 0.5);
-          } else {
-            float nebula = noise(p + vec2(t * 0.4,-t * 0.2));
-            c = mix(vec3(0.045,0.02,0.1),vec3(0.16,0.065,0.25),nebula * 0.5 + 0.5);
-          }
-          alpha *= 1.0 - smoothstep(420.0,600.0,d);
-          gl_FragColor = vec4(c,alpha);
+          vec2 p = (vP - uAnchor) / 430.0;
+          float soft = exp(-dot(p,p) * 1.5);
+          vec3 color = mix(uBase,uGlow,soft * 0.7);
+          gl_FragColor = vec4(color,1.0);
+          #include <colorspace_fragment>
         }`,
-      transparent: true, depthWrite: false, side: THREE.DoubleSide,
+      depthWrite: false, side: THREE.DoubleSide,
     })
-    this.backdrop = new THREE.Mesh(new THREE.CircleGeometry(600, 80), this.material)
+    this.backdrop = new THREE.Mesh(new THREE.CircleGeometry(1800, 64), this.material)
     this.backdrop.rotation.x = -Math.PI / 2
-    this.backdrop.position.y = -36
-    this.backdrop.renderOrder = -2
+    this.backdrop.position.y = -44
+    this.backdrop.renderOrder = -4
     this.group.add(this.backdrop)
 
-    this.trunks = new THREE.InstancedMesh(new THREE.CylinderGeometry(0.7, 1.1, 9, 6), new THREE.MeshStandardMaterial({ color: 0x493831, roughness: 1 }), COUNT)
-    this.trees = new THREE.InstancedMesh(new THREE.ConeGeometry(5.5, 13, 7), new THREE.MeshStandardMaterial({ color: 0x26795f, roughness: 0.9, emissive: 0x0e251d, emissiveIntensity: 0.3 }), COUNT)
-    this.crystals = new THREE.InstancedMesh(new THREE.OctahedronGeometry(5, 0), new THREE.MeshStandardMaterial({ color: 0x786dc7, emissive: 0x4f2490, emissiveIntensity: 0.45, roughness: 0.25, metalness: 0.3 }), COUNT)
-    for (const mesh of [this.trunks, this.trees, this.crystals]) {
+    const sceneryMaterial = (color: number, emissive = 0x000000, metalness = 0) => new THREE.MeshStandardMaterial({ color, emissive, emissiveIntensity: 0.35, roughness: 0.75 - metalness * 0.5, metalness, transparent: true, depthWrite: false })
+    this.trunks = new THREE.InstancedMesh(new THREE.CylinderGeometry(0.7, 1.1, 9, 6), sceneryMaterial(0x493831), COUNT)
+    this.trees = new THREE.InstancedMesh(new THREE.SphereGeometry(1, 12, 8).scale(5.3, 8, 5.3), sceneryMaterial(0x26795f, 0x0e251d), COUNT)
+    this.crystals = new THREE.InstancedMesh(new THREE.OctahedronGeometry(5, 0), sceneryMaterial(0x9987db, 0x4f2490, 0.3), COUNT)
+    this.swells = new THREE.InstancedMesh(new THREE.SphereGeometry(1, 16, 8), sceneryMaterial(0x327b91, 0x0f314a, 0.15), 16)
+    this.dunes = new THREE.InstancedMesh(new THREE.SphereGeometry(1, 16, 8), sceneryMaterial(0xa47b48, 0x342212), 16)
+    for (const mesh of [this.trunks, this.trees, this.crystals, this.swells, this.dunes]) {
       mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage)
       mesh.frustumCulled = false
+      mesh.renderOrder = -2
       this.group.add(mesh)
     }
+
+    this.sun = new THREE.Group()
+    const disk = new THREE.Mesh(new THREE.SphereGeometry(1, 20, 12), new THREE.MeshBasicMaterial({ color: 0xffba63, transparent: true, depthWrite: false }))
+    disk.scale.set(30, 13, 30)
+    const glow = new THREE.Mesh(new THREE.SphereGeometry(1, 16, 10), new THREE.MeshBasicMaterial({ color: 0xff752e, transparent: true, opacity: 0.12, depthWrite: false, side: THREE.BackSide, blending: THREE.AdditiveBlending }))
+    glow.scale.set(42, 17, 42)
+    glow.userData.opacity = 0.12
+    this.sun.add(disk, glow)
+    this.group.add(this.sun)
+
+    // Separate distant light veils, NOT stripes drawn into the backdrop shader.
+    this.aurora = new THREE.Group()
+    for (let i = 0; i < 3; i++) {
+      const veil = new THREE.Mesh(new THREE.SphereGeometry(1, 16, 8), new THREE.MeshBasicMaterial({ color: [0x65ddb9, 0x839dff, 0xd39bef][i], transparent: true, opacity: 0.16, depthWrite: false, blending: THREE.AdditiveBlending }))
+      veil.scale.set(36 + i * 6, 2.5, 12)
+      veil.rotation.y = i * 0.65
+      veil.userData.opacity = 0.16
+      this.aurora.add(veil)
+    }
+    this.group.add(this.aurora)
+
     const positions = new Float32Array(180 * 3)
     const phases = new Float32Array(180)
     for (let i = 0; i < 180; i++) {
       const a = i * 2.39996
-      const r = 35 + Math.sqrt(i / 180) * 340
+      const r = 1 + (i % 7) * 0.055
       positions[i * 3] = Math.cos(a) * r
-      positions[i * 3 + 1] = -17 - (i % 9) * 1.5
+      positions[i * 3 + 1] = -19 - (i % 9) * 1.5
       positions[i * 3 + 2] = Math.sin(a) * r
       phases[i] = i * 1.71
     }
@@ -90,49 +116,119 @@ export class ArenaEnvironment {
     geo.setAttribute('position', new THREE.BufferAttribute(positions, 3))
     geo.setAttribute('phase', new THREE.BufferAttribute(phases, 1))
     this.particleMaterial = new THREE.ShaderMaterial({
-      uniforms: { uTime: { value: 0 }, uColor: { value: new THREE.Color() }, uKind: { value: 0 } },
-      vertexShader: `attribute float phase; uniform float uTime; uniform float uKind; varying float vA;
-        void main(){ vec3 p = position; p.x += sin(uTime * 0.3 + phase) * 5.0; p.z += cos(uTime * 0.2 + phase) * 4.0;
+      uniforms: { uTime: { value: 0 }, uColor: { value: new THREE.Color() }, uRadius: { value: 128 }, uOpacity: { value: 0 } },
+      vertexShader: `attribute float phase; uniform float uTime; uniform float uRadius; varying float vA;
+        void main(){ vec3 p = position; p.xz *= uRadius + 30.0;
+          p.x += sin(uTime * 0.3 + phase) * 5.0; p.z += cos(uTime * 0.2 + phase) * 4.0;
           p.y += sin(uTime * 0.4 + phase) * 2.0; vA = 0.4 + 0.25 * sin(phase + uTime * 0.3);
           vec4 mv = modelViewMatrix * vec4(p,1.0); gl_PointSize = clamp(180.0 / -mv.z,1.0,4.0); gl_Position = projectionMatrix * mv; }`,
-      fragmentShader: `uniform vec3 uColor; varying float vA; void main(){ float d = length(gl_PointCoord - 0.5); if(d > 0.5) discard; gl_FragColor = vec4(uColor,vA * (1.0 - d * 2.0)); }`,
+      fragmentShader: `uniform vec3 uColor; uniform float uOpacity; varying float vA;
+        void main(){ float d = length(gl_PointCoord - 0.5); if(d > 0.5) discard; gl_FragColor = vec4(uColor,uOpacity * vA * (1.0 - d * 2.0)); }`,
       transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
     })
     this.particles = new THREE.Points(geo, this.particleMaterial)
     this.group.add(this.particles)
   }
 
-  update(kind: EnvironmentId, time: number, radius: number, reduced: boolean): number {
-    this.kind = kind
+  /** A new round snaps to its initial palette; stage/timed changes crossfade in update. */
+  reset(): void { this.kind = null }
+
+  update(kind: EnvironmentId, time: number, radius: number, reduced: boolean): THREE.Color {
+    const palette = PALETTES[kind]
+    const index = ENVIRONMENTS.indexOf(kind)
+    if (this.kind !== kind) {
+      const first = this.kind === null
+      this.kind = kind
+      this.changedAt = first ? time - ENVIRONMENT_FADE_SECONDS : time
+      this.fromBase.copy(first ? this.targetBase.setHex(palette.base) : this.background)
+      this.fromGlow.copy(first ? this.targetGlow.setHex(palette.glow) : this.material.uniforms.uGlow.value)
+      this.fromMist.copy(first ? this.targetMist.setHex(palette.mist) : this.particleMaterial.uniforms.uColor.value)
+      this.fromAnchor.copy(first ? this.targetAnchor.set(...palette.anchor) : this.material.uniforms.uAnchor.value)
+      this.fromWeights.splice(0, 6, ...this.weights)
+      if (first) { this.fromWeights.fill(0); this.fromWeights[index] = 1 }
+      this.targetBase.setHex(palette.base)
+      this.targetGlow.setHex(palette.glow)
+      this.targetMist.setHex(palette.mist)
+      this.targetAnchor.set(...palette.anchor)
+    }
+    const progress = reduced ? 1 : THREE.MathUtils.clamp((time - this.changedAt) / ENVIRONMENT_FADE_SECONDS, 0, 1)
+    const blend = progress * progress * (3 - 2 * progress)
+    this.background.lerpColors(this.fromBase, this.targetBase, blend)
+    this.material.uniforms.uBase.value.copy(this.background)
+    this.material.uniforms.uGlow.value.lerpColors(this.fromGlow, this.targetGlow, blend)
+    this.material.uniforms.uAnchor.value.lerpVectors(this.fromAnchor, this.targetAnchor, blend)
+    this.particleMaterial.uniforms.uColor.value.lerpColors(this.fromMist, this.targetMist, blend)
+    for (let i = 0; i < 6; i++) this.weights[i] = THREE.MathUtils.lerp(this.fromWeights[i], i === index ? 1 : 0, blend)
+    const [forest, ocean, dunes, solar, aurora, crystal] = this.weights
+    const opacity = (mesh: THREE.InstancedMesh, amount: number) => {
+      mesh.visible = amount > 0.002
+      ;(mesh.material as THREE.MeshStandardMaterial).opacity = amount * 0.72
+    }
+    opacity(this.trunks, forest); opacity(this.trees, forest); opacity(this.crystals, crystal)
+    opacity(this.swells, ocean); opacity(this.dunes, dunes)
+    const fadeGroup = (group: THREE.Group, amount: number) => {
+      group.visible = amount > 0.002
+      for (const child of group.children) {
+        const mesh = child as THREE.Mesh<THREE.BufferGeometry, THREE.MeshBasicMaterial>
+        mesh.material.opacity = amount * (mesh.userData.opacity as number ?? 0.7)
+      }
+    }
+    fadeGroup(this.sun, solar); fadeGroup(this.aurora, aurora)
     const t = reduced ? 0 : time
-    this.material.uniforms.uTime.value = t
-    this.material.uniforms.uKind.value = ENVIRONMENTS.indexOf(kind)
-    this.material.uniforms.uRadius.value = radius
     this.particleMaterial.uniforms.uTime.value = t
-    this.particleMaterial.uniforms.uColor.value.setHex(kind === 'forest' ? 0x73ba79 : kind === 'dunes' ? 0xd7a868 : kind === 'solar' ? 0xffab42 : 0x9395ff)
-    this.trunks.visible = this.trees.visible = kind === 'forest'
-    this.crystals.visible = kind === 'crystal'
-    this.particles.visible = kind !== 'ocean'
+    this.particleMaterial.uniforms.uRadius.value = radius
+    this.particleMaterial.uniforms.uOpacity.value = 1 - ocean * 0.55
     this.particles.geometry.setDrawRange(0, this.quality === 'low' ? 60 : 180)
     const count = this.quality === 'low' ? 24 : COUNT
     this.trunks.count = this.trees.count = this.crystals.count = count
-    if (kind === 'forest' || kind === 'crystal') {
+    if (forest > 0.002 || crystal > 0.002) {
       for (let i = 0; i < count; i++) {
         const a = i * 2.39996
-        const r = radius + 24 + (i % 7) * 12
-        const x = Math.cos(a) * r
-        const z = Math.sin(a) * r
+        const r = radius + 32 + (i % 7) * 12
+        const x = Math.cos(a) * r, z = Math.sin(a) * r
         const s = 0.8 + (i % 4) * 0.18
-        rotation.setFromAxisAngle(UP, a + (kind === 'crystal' ? t * 0.05 : 0))
-        matrix.compose(position.set(x, -21, z), rotation, scale.set(s, s, s))
+        rotation.setFromAxisAngle(UP, a)
+        matrix.compose(position.set(x, -24, z), rotation, scale.set(s, s, s))
         this.trunks.setMatrixAt(i, matrix)
-        matrix.compose(position.set(x + Math.sin(t * 0.5 + i) * (reduced ? 0 : 0.3), -13, z), rotation, scale.set(s, s, s))
+        matrix.compose(position.set(x + Math.sin(t * 0.5 + i) * (reduced ? 0 : 0.3), -16, z), rotation, scale.set(s, s, s))
         this.trees.setMatrixAt(i, matrix)
-        matrix.compose(position.set(x, -15 + (reduced ? 0 : Math.sin(t * 0.4 + i)), z), rotation, scale.set(s, s * 1.8, s))
+        rotation.setFromAxisAngle(UP, a + t * 0.05)
+        matrix.compose(position.set(x, -19 + (reduced ? 0 : Math.sin(t * 0.4 + i)), z), rotation, scale.set(s, s * 1.8, s))
         this.crystals.setMatrixAt(i, matrix)
       }
       this.trunks.instanceMatrix.needsUpdate = this.trees.instanceMatrix.needsUpdate = this.crystals.instanceMatrix.needsUpdate = true
     }
-    return BACKGROUNDS[this.kind]
+    const blobs = this.quality === 'low' ? 8 : 16
+    this.swells.count = this.dunes.count = blobs
+    if (ocean > 0.002 || dunes > 0.002) for (let i = 0; i < blobs; i++) {
+      const a = i * 2.39996, r = radius + 65 + i % 4 * 25
+      const drift = reduced ? 0 : Math.sin(t * 0.16 + i) * 5
+      rotation.setFromAxisAngle(UP, a + 0.4)
+      matrix.compose(position.set(Math.cos(a) * r + drift, -29, Math.sin(a) * r), rotation, scale.set(28 + i % 3 * 5, 5 + (reduced ? 0 : Math.sin(t * 0.35 + i)), 15))
+      this.swells.setMatrixAt(i, matrix)
+      matrix.compose(position.set(Math.cos(a) * r, -31, Math.sin(a) * r + drift * 0.2), rotation, scale.set(30 + i % 4 * 5, 8, 17))
+      this.dunes.setMatrixAt(i, matrix)
+    }
+    this.swells.instanceMatrix.needsUpdate = this.dunes.instanceMatrix.needsUpdate = true
+    this.sun.position.set(Math.cos(0.7) * (radius + 90), -22, Math.sin(0.7) * (radius + 90))
+    this.sun.scale.setScalar(reduced ? 1 : 1 + Math.sin(t * 0.3) * 0.035)
+    this.aurora.position.set(-radius - 85, -25, -radius * 0.3)
+    this.aurora.rotation.y = reduced ? 0 : Math.sin(t * 0.07) * 0.24
+    this.aurora.position.y += reduced ? 0 : Math.sin(t * 0.2) * 3
+    return this.background
+  }
+
+  /** Environment-owned resources only; no globally shared worm geometries are touched. */
+  dispose(): void {
+    const geometries = new Set<THREE.BufferGeometry>(), materials = new Set<THREE.Material>()
+    this.group.traverse(object => {
+      if (object instanceof THREE.Mesh || object instanceof THREE.Points) {
+        geometries.add(object.geometry)
+        for (const material of Array.isArray(object.material) ? object.material : [object.material]) materials.add(material)
+      }
+    })
+    for (const geometry of geometries) geometry.dispose()
+    for (const material of materials) material.dispose()
+    this.group.clear()
   }
 }

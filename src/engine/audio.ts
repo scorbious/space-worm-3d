@@ -8,6 +8,8 @@
  * and an intense layer from the `intensity` signal with hysteresis.
  */
 import { assets } from './assets'
+import type { EnvironmentId } from '../game/environmentDefs'
+import { ENVIRONMENT_MUSIC, EnvironmentSynth, MUSIC_FADE_SECONDS } from './environmentMusic'
 
 export type Sfx =
   | 'eat' | 'nova' | 'shard' | 'celestial' | 'power' | 'pickup' | 'shieldUp' | 'shield' | 'boost' | 'death' | 'kill'
@@ -45,7 +47,7 @@ const SFX: Record<Sfx, SfxDef> = {
 
 export type MusicScene = 'none' | 'title' | 'arena' | 'results'
 type Track = 'title' | 'arena' | 'intense' | 'results'
-type Voice = { src: AudioBufferSourceNode; gain: GainNode; track: Track }
+type Voice = { src: AudioBufferSourceNode; gain: GainNode; key: string }
 
 export class Audio {
   readonly ctx: AudioContext
@@ -59,6 +61,12 @@ export class Audio {
   private loops = new Map<string, { src: AudioBufferSourceNode; gain: GainNode }>()
   private scene: MusicScene = 'none'
   private current: Voice | null = null
+  private retiring = new Set<Voice>()
+  private environmentId: EnvironmentId = 'forest'
+  private synth: EnvironmentSynth
+  private unlocked = false
+  private disposed = false
+  private musicTimer: number
   private layer: Track = 'arena'
   private hotFor = 0
   private coolFor = 0
@@ -77,11 +85,15 @@ export class Audio {
     this.music.connect(this.master)
     this.sfx.connect(this.master)
     this.master.connect(comp).connect(this.ctx.destination)
-    window.setInterval(() => this.tickMusic(), 250)
+    this.synth = new EnvironmentSynth(this.ctx, this.music)
+    this.musicTimer = window.setInterval(() => this.tickMusic(), 250)
   }
 
   unlock(): void {
-    if (this.ctx.state === 'suspended') void this.ctx.resume()
+    if (this.disposed) return
+    this.unlocked = true
+    if (this.ctx.state === 'suspended') void this.ctx.resume().then(() => this.tickMusic()).catch(() => {})
+    else this.tickMusic()
   }
 
   /** Volumes in 0..1. */
@@ -123,13 +135,14 @@ export class Audio {
     g.gain.exponentialRampToValueAtTime(vol * 0.25, t + 0.01)
     g.gain.exponentialRampToValueAtTime(0.0001, t + dur)
     o.connect(g).connect(this.sfx)
+    o.onended = () => { o.disconnect(); g.disconnect() }
     o.start(t)
     o.stop(t + dur + 0.02)
   }
 
   /** Play a one-shot. `pitch` scales playback rate; `gain` scales the preset level. */
   play(name: Sfx, pitch = 1, gain = 1): void {
-    if (this.ctx.state !== 'running') return
+    if (!this.unlocked || this.disposed || this.ctx.state !== 'running') return
     const def = SFX[name]
     const now = this.ctx.currentTime
     if (now - (this.lastPlay.get(name) ?? -1) < (def.gap ?? 0.02)) return
@@ -147,7 +160,10 @@ export class Audio {
     g.gain.value = def.gain * gain
     src.connect(g).connect(this.sfx)
     this.live.set(name, (this.live.get(name) ?? 0) + 1)
-    src.onended = () => this.live.set(name, Math.max(0, (this.live.get(name) ?? 1) - 1))
+    src.onended = () => {
+      this.live.set(name, Math.max(0, (this.live.get(name) ?? 1) - 1))
+      src.disconnect(); g.disconnect()
+    }
     src.start()
   }
 
@@ -174,7 +190,7 @@ export class Audio {
       cur.src.playbackRate.setTargetAtTime(rate, t, 0.1)
       return
     }
-    if (this.ctx.state !== 'running') return
+    if (!this.unlocked || this.disposed || this.ctx.state !== 'running') return
     const buf = this.buffer(id)
     if (!buf) return
     const src = this.ctx.createBufferSource()
@@ -185,6 +201,7 @@ export class Audio {
     g.gain.value = 0
     g.gain.setTargetAtTime(level, t, 0.06)
     src.connect(g).connect(this.sfx)
+    src.onended = () => { src.disconnect(); g.disconnect() }
     src.start()
     this.loops.set(key, { src, gain: g })
   }
@@ -206,12 +223,26 @@ export class Audio {
   }
 
   setScene(scene: MusicScene): void {
-    if (scene === this.scene) return
+    if (this.disposed) return
+    if (scene === this.scene) { this.tickMusic(); return }
     this.scene = scene
     if (scene === 'arena') {
       this.layer = 'arena'
       this.hotFor = this.coolFor = 0
+    } else {
+      this.synth.stop()
+      this.fadeOut(this.current, 0.15)
+      this.current = null
+      for (const voice of this.retiring) this.fadeOut(voice, 0.15)
     }
+    this.tickMusic()
+  }
+
+  /** Safe before unlock: records the desired environment without creating audible voices. */
+  setEnvironmentMusic(environmentId: EnvironmentId): void {
+    if (this.disposed || environmentId === this.environmentId) return
+    this.environmentId = environmentId
+    this.hotFor = this.coolFor = 0
     this.tickMusic()
   }
 
@@ -226,13 +257,14 @@ export class Audio {
       case 'results':
         return 'results'
       case 'arena':
-        return this.layer
+        return this.layer === 'intense' ? 'intense' : ENVIRONMENT_MUSIC[this.environmentId].track
       default:
         return null
     }
   }
 
   private tickMusic(): void {
+    if (!this.unlocked || this.disposed || this.ctx.state !== 'running') return
     const now = performance.now() / 1000
     const dt = this.lastTick ? Math.min(1, now - this.lastTick) : 0.25
     this.lastTick = now
@@ -247,28 +279,33 @@ export class Audio {
       if (this.layer === 'arena' && this.hotFor > 2.5 && this.decoded.has('bgm/intense')) this.layer = 'intense'
       else if (this.layer === 'intense' && this.coolFor > 6) this.layer = 'arena'
       if (!this.decoded.has('bgm/intense')) this.buffer('bgm/intense')
+      this.synth.setEnvironment(this.environmentId)
+      this.synth.tick()
     }
-    if (this.ctx.state !== 'running') return
     const want = this.wanted()
-    if (this.current?.track === want) return
+    const key = this.scene === 'arena' ? `${this.environmentId}:${want}` : `${this.scene}:${want}`
+    if (this.current?.key === key) return
     if (want === null) {
-      this.fadeOut(this.current, 1.2)
+      this.fadeOut(this.current, 0.15)
       this.current = null
       return
     }
     const buf = this.buffer(`bgm/${want}`)
     if (!buf) return
-    this.fadeOut(this.current, 2)
+    this.fadeOut(this.current, this.scene === 'arena' ? MUSIC_FADE_SECONDS : 0.3)
     const src = this.ctx.createBufferSource()
     src.buffer = buf
     src.loop = want !== 'results'
+    src.playbackRate.value = this.scene === 'arena' ? ENVIRONMENT_MUSIC[this.environmentId].rate : 1
     const g = this.ctx.createGain()
     const t = this.ctx.currentTime
     g.gain.setValueAtTime(0.0001, t)
-    g.gain.exponentialRampToValueAtTime(1, t + (want === 'results' ? 0.2 : 2))
+    g.gain.exponentialRampToValueAtTime(this.scene === 'arena' ? 0.68 : 1, t + (want === 'results' ? 0.2 : MUSIC_FADE_SECONDS))
     src.connect(g).connect(this.music)
+    const voice = { src, gain: g, key }
+    src.onended = () => { src.disconnect(); g.disconnect(); this.retiring.delete(voice) }
     src.start()
-    this.current = { src, gain: g, track: want }
+    this.current = voice
   }
 
   private fadeOut(v: Voice | null, seconds: number): void {
@@ -277,12 +314,31 @@ export class Audio {
     v.gain.gain.cancelScheduledValues(t)
     v.gain.gain.setValueAtTime(v.gain.gain.value, t)
     v.gain.gain.linearRampToValueAtTime(0, t + seconds)
-    window.setTimeout(() => {
-      try {
-        v.src.stop()
-      } catch {
-        /* already stopped */
-      }
-    }, seconds * 1000 + 100)
+    // Audio-clock stops work even when a browser throttles JS timers.
+    this.retiring.add(v)
+    try { v.src.stop(t + seconds + 0.02) } catch { this.retiring.delete(v) }
+    // Rapid stage changes cannot leave an unbounded stack of fading sample loops.
+    if (this.retiring.size > 2) {
+      const oldest = this.retiring.values().next().value as Voice
+      try { oldest.src.stop() } catch { /* already stopped */ }
+      oldest.src.disconnect(); oldest.gain.disconnect(); this.retiring.delete(oldest)
+    }
+  }
+
+  dispose(): void {
+    if (this.disposed) return
+    this.disposed = true
+    window.clearInterval(this.musicTimer)
+    this.synth.dispose()
+    for (const voice of [this.current, ...this.retiring]) if (voice) {
+      try { voice.src.stop() } catch { /* already stopped */ }
+      voice.src.disconnect(); voice.gain.disconnect()
+    }
+    for (const voice of this.loops.values()) {
+      try { voice.src.stop() } catch { /* already stopped */ }
+      voice.src.disconnect(); voice.gain.disconnect()
+    }
+    this.loops.clear(); this.retiring.clear(); this.current = null
+    void this.ctx.close()
   }
 }

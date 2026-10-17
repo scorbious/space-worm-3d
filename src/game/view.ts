@@ -11,7 +11,9 @@ import { CONFIG } from './config'
 import { CELESTIALS, TEAM_COLORS, type CelestialId, type Skin } from './content'
 import { Fx } from './fx'
 import { appearanceSkin } from './appearance'
-import { headGeometry } from './headShapes'
+import { HEAD_FEATURES, headGeometry } from './headShapes'
+import { bodyArmorGeometry, headArmorGeometry } from './headArmor'
+import { ARMOR_PROFILES, armorTier } from './growthVisuals'
 import { ArenaEnvironment } from './environments'
 import { SPECIAL_COLORS } from './specials'
 import { disposeSpecial, makeSpecial } from './specialVisuals'
@@ -23,13 +25,17 @@ import { ThreatMarks, type ThreatMode } from './threatMarks'
 import type { RivalThreat, ThreatReport } from './threats'
 import {
   animateCelestial, asteroidGeometry, crystalMaterial, glowQuadMaterial, glowTexture, iconSprite, jellyMaterial,
-  labelTexture, makeCelestial, makeLabel, makePickup, metalMaterial, nebulaTexture, rockMaterial, shieldMaterial, type CelestialVisual,
+  labelTexture, makeCelestial, makeLabel, makePickup, metalMaterial, rockMaterial, shieldMaterial, type CelestialVisual,
 } from './visuals'
 
 type HeadView = {
   group: THREE.Group
   head: THREE.Mesh
   headMat: THREE.ShaderMaterial
+  armor: THREE.Group
+  armorLayers: THREE.Mesh[]
+  armorMat: THREE.MeshStandardMaterial
+  trimMat: THREE.MeshStandardMaterial
   eyes: THREE.Mesh[]
   pupils: THREE.Mesh[]
   mouth: THREE.Mesh
@@ -51,7 +57,10 @@ type GateView = { mat: THREE.ShaderMaterial; tips: THREE.MeshBasicMaterial[]; ax
 const MAX_SEGMENTS = 9000
 const MAX_ORBS = 1800
 const MAX_SHARDS = 80
+const MAX_BODY_ARMOR = Math.ceil(MAX_SEGMENTS / 3)
 const tmpColor = new THREE.Color()
+const armorColor = new THREE.Color()
+const trimColor = new THREE.Color()
 const GEM_TILT = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0.4).normalize(), 0.75)
 const tmpQuat = new THREE.Quaternion()
 const tmpMat = new THREE.Matrix4()
@@ -76,6 +85,7 @@ export class View {
   private sim: Sim | null = null
   private hazards = new THREE.Group()
   private body: THREE.InstancedMesh
+  private bodyArmor: THREE.InstancedMesh
   private orbs: THREE.InstancedMesh
   private orbGlow: THREE.InstancedMesh
   private shards: THREE.InstancedMesh
@@ -87,13 +97,11 @@ export class View {
   private gates: GateView[] = []
   private wellMats: THREE.ShaderMaterial[] = []
   private asteroidMeshes: THREE.Mesh[] = []
-  private starMat!: THREE.ShaderMaterial
   private wallMat!: THREE.ShaderMaterial
   private floorMat!: THREE.ShaderMaterial
   private arenaFloor!: THREE.Mesh
   private arenaWall!: THREE.Mesh
   private arenaRim!: THREE.Mesh
-  private fallbackNebula: THREE.Sprite[] = []
   private stageBeacon: THREE.Group | null = null
   private magnetGeo = new THREE.RingGeometry(0.975, 1, 72)
   private bulges = new Map<number, number[]>()
@@ -121,6 +129,13 @@ export class View {
     this.body.frustumCulled = false
     this.body.count = 0
     this.scene.add(this.body)
+
+    this.bodyArmor = new THREE.InstancedMesh(bodyArmorGeometry(), new THREE.MeshStandardMaterial({ roughness: 0.34, metalness: 0.65, side: THREE.DoubleSide }), MAX_BODY_ARMOR)
+    this.bodyArmor.instanceMatrix.setUsage(THREE.DynamicDrawUsage)
+    this.bodyArmor.setColorAt(0, new THREE.Color(1, 1, 1))
+    this.bodyArmor.frustumCulled = false
+    this.bodyArmor.count = 0
+    this.scene.add(this.bodyArmor)
 
     this.orbs = new THREE.InstancedMesh(new THREE.OctahedronGeometry(1, 0), crystalMaterial(), MAX_ORBS)
     this.orbs.instanceMatrix.setUsage(THREE.DynamicDrawUsage)
@@ -170,70 +185,7 @@ export class View {
   // ─── static background ──────────────────────────────────────────────────
   private buildBackground(): void {
     const R = CONFIG.arena.radius
-    // Painted nebula far below the arena; procedural clouds stand in until it streams in.
-    const nebulaMat = new THREE.MeshBasicMaterial({ color: new THREE.Color(0.62, 0.62, 0.7), depthWrite: false, fog: false })
-    const nebula = new THREE.Mesh(new THREE.PlaneGeometry(2700, 1520), nebulaMat)
-    nebula.rotation.x = -Math.PI / 2
-    nebula.position.y = -520
-    nebula.renderOrder = -3
-    nebula.visible = false
-    this.scene.add(nebula)
-    assets.when('bg/nebula', v => {
-      if (!(v instanceof HTMLImageElement)) return
-      const tex = new THREE.Texture(v)
-      tex.colorSpace = THREE.SRGBColorSpace
-      tex.needsUpdate = true
-      nebulaMat.map = tex
-      nebulaMat.needsUpdate = true
-      nebula.visible = true
-      for (const s of this.fallbackNebula) s.visible = false
-    })
-
-    const count = 2800
-    const pos = new Float32Array(count * 3)
-    const col = new Float32Array(count * 3)
-    const size = new Float32Array(count)
-    const phase = new Float32Array(count)
-    const palette = [0xffffff, 0xcfe0ff, 0xffe6c7, 0xd9c9ff, 0x9fe8ff]
-    for (let i = 0; i < count; i++) {
-      pos[i * 3] = (Math.random() - 0.5) * 1500
-      pos[i * 3 + 1] = -40 - Math.random() * 440
-      pos[i * 3 + 2] = (Math.random() - 0.5) * 1500
-      tmpColor.setHex(palette[i % palette.length])
-      col[i * 3] = tmpColor.r
-      col[i * 3 + 1] = tmpColor.g
-      col[i * 3 + 2] = tmpColor.b
-      size[i] = Math.random() < 0.05 ? 3 + Math.random() * 2.5 : 0.7 + Math.random() * 1.4
-      phase[i] = Math.random() * 6.28
-    }
-    const geo = new THREE.BufferGeometry()
-    geo.setAttribute('position', new THREE.BufferAttribute(pos, 3))
-    geo.setAttribute('color', new THREE.BufferAttribute(col, 3))
-    geo.setAttribute('size', new THREE.BufferAttribute(size, 1))
-    geo.setAttribute('phase', new THREE.BufferAttribute(phase, 1))
-    this.starMat = new THREE.ShaderMaterial({
-      uniforms: { uTime: { value: 0 }, uTwinkle: { value: 1 }, uScale: { value: window.innerHeight / 2 } },
-      vertexShader: `attribute float size; attribute float phase; attribute vec3 color; uniform float uTime; uniform float uTwinkle; uniform float uScale; varying vec3 vC; varying float vA;
-        void main(){ vC = color; vA = 0.65 + 0.35 * sin(uTime * (0.8 + phase * 0.3) + phase) * uTwinkle; vec4 mv = modelViewMatrix * vec4(position,1.0); gl_PointSize = clamp(size * uScale * 1.3 / -mv.z, 1.0, 6.0); gl_Position = projectionMatrix * mv; }`,
-      fragmentShader: `varying vec3 vC; varying float vA; void main(){ vec2 d = gl_PointCoord - 0.5; float r = dot(d,d) * 4.0; if (r > 1.0) discard; gl_FragColor = vec4(vC, (1.0 - r) * vA); }`,
-      transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
-    })
-    const stars = new THREE.Points(geo, this.starMat)
-    stars.frustumCulled = false
-    this.scene.add(stars)
-
-    const hues = [265, 190, 320, 230, 290, 170]
-    for (let i = 0; i < hues.length; i++) {
-      const m = new THREE.SpriteMaterial({ map: nebulaTexture(hues[i], i + 1), transparent: true, opacity: 0.24, blending: THREE.AdditiveBlending, depthWrite: false })
-      const s = new THREE.Sprite(m)
-      const a = (i / hues.length) * Math.PI * 2
-      s.position.set(Math.cos(a) * 260, -320 - i * 20, Math.sin(a) * 260)
-      s.scale.setScalar(620)
-      this.fallbackNebula.push(s)
-      this.scene.add(s)
-    }
-
-    // Arena floor: a faint glass hex lattice so the nebula reads through it.
+    // The environment owns the clean backdrop. Keep the arena's navigational hex lattice.
     this.floorMat = new THREE.ShaderMaterial({
       uniforms: { uR: { value: R }, uTime: { value: 0 } },
       vertexShader: 'varying vec2 vP; void main(){ vP = position.xy; gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0); }',
@@ -296,6 +248,7 @@ export class View {
   // ─── per-arena setup ────────────────────────────────────────────────────
   bind(sim: Sim): void {
     this.sim = sim
+    this.environment.reset()
     this.applyStageVisuals(sim.stage, sim.radius)
     for (const child of [...this.hazards.children]) {
       this.hazards.remove(child)
@@ -440,11 +393,8 @@ export class View {
     const t = this.time
     const calm = this.reducedMotion
     const background = this.environment.update(sim.environment, t, sim.radius, calm)
-    ;(this.scene.background as THREE.Color).setHex(background)
+    ;(this.scene.background as THREE.Color).copy(background)
     this.fx.reduced = calm
-    this.starMat.uniforms.uTime.value = t
-    this.starMat.uniforms.uTwinkle.value = calm ? 0 : 1
-    this.starMat.uniforms.uScale.value = window.innerHeight / 2
     this.wallMat.uniforms.uTime.value = calm ? 0 : t
     this.floorMat.uniforms.uTime.value = calm ? 0 : t
     for (const m of this.wellMats) m.uniforms.uTime.value = calm ? t * 0.15 : t
@@ -626,12 +576,18 @@ export class View {
     // Worms
     const segUsed = new Map<CelestialId, number>()
     n = 0
+    let plates = 0
     let visibleWorms = 0
     const seenHeads = new Set<number>()
     for (const w of sim.worms) {
       if (!w.alive) continue
       const skin = appearanceSkin(w.skin, w.color)
       const len = w.xs.length
+      const tier = armorTier(len, w.radius)
+      const growth = ARMOR_PROFILES[tier]
+      const band = Math.max(1, Math.round(skin.band * growth.band))
+      armorColor.setHex(growth.tint).lerp(tmpColor.setHex(skin.head), 0.28)
+      trimColor.setHex(growth.trim).lerp(tmpColor.setHex(skin.colors[0]), 0.25)
       const flicker = w.spawnGrace > 0 && !calm && Math.floor(t * 12) % 2 === 0
       const dim = w.spawnGrace > 0 ? (calm ? 0.55 : flicker ? 0.3 : 0.75) : 1
       const bulges = this.bulges.get(w.id)
@@ -679,8 +635,18 @@ export class View {
         const s = w.radius * tailK * wave * bump
         tmpMat.makeScale(s, s * 0.92, s).setPosition(x, 0, z)
         this.body.setMatrixAt(n, tmpMat)
-        tmpColor.setHex(skin.colors[Math.floor(i / skin.band) % skin.colors.length]).multiplyScalar((w.boosting ? 1.3 : 1) * dim * (bump > 1 ? 1.25 : 1))
+        tmpColor.setHex(skin.colors[Math.floor(i / band) % skin.colors.length])
+        if (tier > 0 && i % band === 0) tmpColor.lerp(trimColor, 0.5)
+        tmpColor.multiplyScalar((w.boosting ? 1.3 : 1) * dim * (bump > 1 ? 1.25 : 1))
         this.body.setColorAt(n, tmpColor)
+        if (growth.plateEvery > 0 && i % growth.plateEvery === 0 && i < len - 6 && plates < MAX_BODY_ARMOR) {
+          const heading = Math.atan2(w.zs[i - 1] - z, w.xs[i - 1] - x)
+          tmpQuat.setFromAxisAngle(UP, -heading)
+          tmpMat.compose(tmpPos.set(x, 0, z), tmpQuat, tmpScale.set(s * 1.1, s * 1.04, s * (0.91 + tier * 0.04)))
+          this.bodyArmor.setMatrixAt(plates, tmpMat)
+          this.bodyArmor.setColorAt(plates, tmpColor.copy(i % (growth.plateEvery * 4) === 0 ? trimColor : armorColor).multiplyScalar(dim))
+          plates++
+        }
         n++
       }
       seenHeads.add(w.id)
@@ -696,6 +662,9 @@ export class View {
     this.body.count = n
     this.body.instanceMatrix.needsUpdate = true
     if (this.body.instanceColor) this.body.instanceColor.needsUpdate = true
+    this.bodyArmor.count = plates
+    this.bodyArmor.instanceMatrix.needsUpdate = true
+    if (this.bodyArmor.instanceColor) this.bodyArmor.instanceColor.needsUpdate = true
     for (const [kind, pool] of this.celSegPool) {
       const used = segUsed.get(kind) ?? 0
       for (let i = used; i < pool.length; i++) pool[i].visible = false
@@ -719,7 +688,10 @@ export class View {
     h.group.visible = visible
     if (!visible) return
     const r = w.radius
-    const R = r * 1.18
+    const tier = armorTier(w.xs.length, r)
+    const growth = ARMOR_PROFILES[tier]
+    const R = r * 1.18 * growth.scale
+    const face = HEAD_FEATURES[w.headStyle]
     h.group.position.set(w.xs[0], 0.05, w.zs[0])
     h.group.rotation.y = -w.angle
     const chew = calm ? 0 : Math.max(0, 0.2 - w.gulp) * 5
@@ -727,19 +699,27 @@ export class View {
     h.head.scale.set(R * gulp, R * 0.94 * gulp, R * gulp)
     h.headMat.uniforms.uColor.value.setHex(skin.head).multiplyScalar(w.boosting ? 1.25 : 1)
     h.headMat.uniforms.uOpacity.value = dim < 1 ? 0.55 + dim * 0.45 : 1
+    h.headMat.uniforms.uSolid.value = Math.max(w.headStyle === 'robot' ? 0.7 : 0, growth.solid)
+    h.armor.scale.set(R, R * 0.94, R)
+    for (let i = 0; i < h.armorLayers.length; i++) h.armorLayers[i].visible = i < tier
+    h.armorMat.color.setHex(growth.tint).lerp(tmpColor.setHex(skin.head), 0.28).multiplyScalar(dim)
+    h.trimMat.color.setHex(growth.trim).lerp(tmpColor.setHex(skin.head), 0.25).multiplyScalar(dim)
+    h.armorMat.metalness = 0.45 + tier * 0.15
     // Eyes: glance toward the turn, blink every few seconds.
     const glance = Math.max(-0.12, Math.min(0.12, Math.atan2(Math.sin(w.targetAngle - w.angle), Math.cos(w.targetAngle - w.angle)) * 0.2))
     if (t > h.blinkAt + 0.14) h.blinkAt = t + 2.2 + Math.random() * 3.5
     const blink = !calm && t > h.blinkAt ? 0.12 : 1
     for (let k = 0; k < h.eyes.length; k++) {
       const side = h.eyes.length === 1 ? 0 : k === 0 ? -1 : 1
-      h.eyes[k].position.set(0.5 * R, 0.55 * R, side * 0.42 * R)
-      h.eyes[k].scale.set(0.34 * R, 0.34 * R * blink, 0.34 * R)
-      h.pupils[k].position.set(0.72 * R, 0.66 * R, side * 0.42 * R + glance * r)
-      h.pupils[k].scale.set(0.18 * R, 0.18 * R * blink, 0.18 * R)
+      const eyeSize = face.size * R
+      const eyeHeight = w.headStyle === 'robot' ? 0.65 : 1
+      h.eyes[k].position.set(face.eye[0] * R, face.eye[1] * R, side * face.eye[2] * R)
+      h.eyes[k].scale.set(eyeSize, eyeSize * blink * eyeHeight, eyeSize)
+      h.pupils[k].position.set((face.eye[0] + face.size * 0.62) * R, (face.eye[1] + face.size * 0.34) * R, side * face.eye[2] * R + glance * r)
+      h.pupils[k].scale.set(eyeSize * 0.52, eyeSize * 0.52 * blink * eyeHeight, eyeSize * 0.52)
     }
-    h.mouth.position.set(0.92 * R, 0.02 * R, 0)
-    h.mouth.scale.set(0.12 * R, (0.08 + chew * 0.22) * R, 0.36 * R)
+    h.mouth.position.set(face.mouth[0] * R, face.mouth[1] * R, 0)
+    h.mouth.scale.set(0.075 * R, (0.055 + chew * 0.16) * R, face.width * R)
     h.halo.scale.setScalar(r * 1.8)
     const effect = w.traps.freeze > 0 ? 'freeze' : w.traps.slow > 0 ? 'slow' : w.traps.reverse > 0 ? 'reverse' : w.shrinkLeft > 0 ? 'shrink' : null
     h.status.visible = effect !== null
@@ -764,10 +744,12 @@ export class View {
     h.boostGlow.scale.setScalar(r * (w.freeBoost > 0 ? 7 : 5))
     if (!w.isPlayer) this.threatLook(h, w, team, threat, t, calm)
     h.label.visible = !w.isPlayer
-    if (h.label.visible) h.label.position.set(0, r * 2.4 + (crowned ? r * 1.6 : 0), 0)
+    const top = h.head.geometry.boundingBox!.max.y * R * 0.94
+    const crownY = Math.max(r * 2.1, top + r * 0.6)
+    if (h.label.visible) h.label.position.set(0, crowned ? crownY + r * 1.5 : Math.max(r * 2.4, top + r * 0.5), 0)
     h.crown.visible = crowned
     if (crowned) {
-      h.crown.position.set(0, r * 2.1 + (calm ? 0 : Math.sin(t * 3) * 0.25), 0)
+      h.crown.position.set(0, crownY + (calm ? 0 : Math.sin(t * 3) * 0.25), 0)
       h.crown.scale.setScalar(Math.max(2.6, r * 2.4))
     }
   }
@@ -803,7 +785,7 @@ export class View {
     h.group.traverse(object => {
       if (object instanceof THREE.Mesh) {
         // Procedural head shapes and the magnet ring are shared across living worms.
-        if (object !== h.head && object.geometry !== this.magnetGeo) geometries.add(object.geometry)
+        if (object.geometry.userData.shared !== true && object.geometry !== this.magnetGeo) geometries.add(object.geometry)
       }
       if (object instanceof THREE.Mesh || object instanceof THREE.Sprite) {
         for (const mat of Array.isArray(object.material) ? object.material : [object.material]) materials.add(mat)
@@ -815,10 +797,17 @@ export class View {
 
   private makeHead(w: Worm, skin: Skin, team: boolean): HeadView {
     const group = new THREE.Group()
-    const headMat = jellyMaterial(false, skin.glow)
+    const headMat = jellyMaterial(false, skin.glow, true)
     headMat.uniforms.uColor.value.setHex(skin.head)
+    headMat.uniforms.uFaceted.value = w.headStyle === 'crystal' ? 1 : 0
     const head = new THREE.Mesh(headGeometry(w.headStyle), headMat)
     group.add(head)
+    const armor = new THREE.Group()
+    const armorMat = new THREE.MeshStandardMaterial({ roughness: 0.3, metalness: 0.65 })
+    const trimMat = new THREE.MeshStandardMaterial({ roughness: 0.25, metalness: 0.8 })
+    const armorLayers = Array.from({ length: 3 }, (_, i) => new THREE.Mesh(headArmorGeometry(i), i === 2 ? trimMat : armorMat))
+    for (const layer of armorLayers) { layer.visible = false; armor.add(layer) }
+    group.add(armor)
     const eyeGeo = new THREE.SphereGeometry(1, 16, 12)
     const white = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.15, emissive: 0xffffff, emissiveIntensity: 0.12 })
     const pupilColor = skin.eye === 0xffffff ? 0x120a26 : skin.eye
@@ -863,6 +852,6 @@ export class View {
     const crown = iconSprite('crown', 3)
     crown.visible = false
     group.add(crown)
-    return { group, head, headMat, eyes, pupils, mouth, halo, status, shield, shieldMat, magnet, boostGlow, label, labelKey: '', crown, skin: `${skin.id}:${w.color}:${w.headStyle}`, blinkAt: Math.random() * 3 }
+    return { group, head, headMat, armor, armorLayers, armorMat, trimMat, eyes, pupils, mouth, halo, status, shield, shieldMat, magnet, boostGlow, label, labelKey: '', crown, skin: `${skin.id}:${w.color}:${w.headStyle}`, blinkAt: Math.random() * 3 }
   }
 }

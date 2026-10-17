@@ -155,11 +155,14 @@ const LIGHT_DIR = 'normalize(vec3(0.35, 0.9, 0.25))'
  * rim in the body colour, a tight specular highlight and a faint inner glow. Instanced variant
  * reads colour from `instanceColor`; the single-mesh variant from `uColor`.
  */
-export function jellyMaterial(instanced: boolean, glow = 0.35): THREE.ShaderMaterial {
+export function jellyMaterial(instanced: boolean, glow = 0.35, tinted = false): THREE.ShaderMaterial {
   return new THREE.ShaderMaterial({
-    defines: instanced ? { JELLY_INSTANCED: '' } : {},
-    uniforms: { uColor: { value: new THREE.Color(1, 1, 1) }, uGlow: { value: glow }, uOpacity: { value: 1 } },
+    defines: { ...(instanced ? { JELLY_INSTANCED: '' } : {}), ...(tinted ? { HEAD_TINT: '' } : {}) },
+    uniforms: { uColor: { value: new THREE.Color(1, 1, 1) }, uGlow: { value: glow }, uOpacity: { value: 1 }, uSolid: { value: 0 }, uFaceted: { value: 0 } },
     vertexShader: `varying vec3 vN; varying vec3 vW; varying vec3 vC; uniform vec3 uColor;
+      #ifdef HEAD_TINT
+        attribute vec3 color;
+      #endif
       void main(){
         mat4 m = modelMatrix;
         #ifdef JELLY_INSTANCED
@@ -167,12 +170,16 @@ export function jellyMaterial(instanced: boolean, glow = 0.35): THREE.ShaderMate
         #else
           vC = uColor;
         #endif
+        #ifdef HEAD_TINT
+          vC *= color;
+        #endif
         vec4 w = m * vec4(position, 1.0); vW = w.xyz;
         vN = normalize(mat3(m) * normal);
         gl_Position = projectionMatrix * viewMatrix * w; }`,
-    fragmentShader: `uniform float uGlow; uniform float uOpacity; varying vec3 vN; varying vec3 vW; varying vec3 vC;
+    fragmentShader: `uniform float uGlow; uniform float uOpacity; uniform float uSolid; uniform float uFaceted; varying vec3 vN; varying vec3 vW; varying vec3 vC;
       void main(){
-        vec3 N = normalize(vN); vec3 V = normalize(cameraPosition - vW); vec3 L = ${LIGHT_DIR};
+        vec3 N = normalize(mix(normalize(vN), normalize(cross(dFdx(vW), dFdy(vW))), uFaceted));
+        vec3 V = normalize(cameraPosition - vW); vec3 L = ${LIGHT_DIR};
         float wrap = max(0.0, (dot(N, L) + 0.35) / 1.35);
         float fres = pow(1.0 - max(dot(N, V), 0.0), 2.4);
         vec3 H = normalize(L + V); float spec = pow(max(dot(N, H), 0.0), 60.0);
@@ -185,6 +192,8 @@ export function jellyMaterial(instanced: boolean, glow = 0.35): THREE.ShaderMate
         // Soft-compress pale skins so white bodies stay glossy instead of clipping to flat white.
         vec3 alb = vC / (1.0 + max(vC.r, max(vC.g, vC.b)) * 0.45);
         vec3 col = alb * (0.16 + 0.8 * wrap) * contact + alb * inner * 0.25 + alb * rim * (0.38 + uGlow * 0.65) + vec3(spec * 0.5);
+        vec3 solid = alb * (0.2 + 0.85 * max(dot(N,L),0.0)) * contact + vec3(spec * 0.65) + alb * fres * 0.16;
+        col = mix(col, solid, uSolid);
         gl_FragColor = vec4(col, uOpacity);
         #include <colorspace_fragment>
       }`,

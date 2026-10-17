@@ -193,7 +193,10 @@ export type SimOptions = { mode: Mode; seed?: number; playerName: string; player
 export class Sim {
   readonly mode: Mode
   readonly environmentOffset: number
-  get environment() { return environmentFor(this.stage, this.environmentOffset) }
+  /** Active round seconds; passed unscaled by Game so hit-stop never delays a 180s rotation. */
+  environmentTime = 0
+  private environmentCompensation = 0
+  get environment() { return environmentFor(this.stage, this.environmentOffset, this.environmentTime) }
   radius = CONFIG.arena.radius
   /** Stage growth and legendary growth survive the expiration of a temporary zone. */
   baseRadius = CONFIG.arena.radius
@@ -495,7 +498,14 @@ export class Sim {
   }
 
   // ─── step ───────────────────────────────────────────────────────────────
-  step(dt: number, control: PlayerControl | null): void {
+  step(dt: number, control: PlayerControl | null, environmentDt = dt): void {
+    if (!this.matchOver && Number.isFinite(environmentDt) && environmentDt > 0) {
+      // Kahan summation keeps long rounds and 60Hz boundaries stable without timer drift.
+      const delta = environmentDt - this.environmentCompensation
+      const total = this.environmentTime + delta
+      this.environmentCompensation = (total - this.environmentTime) - delta
+      this.environmentTime = total
+    }
     this.time += dt
     if (this.tooSmallCooldown > 0) this.tooSmallCooldown -= dt
     if (this.mode === 'team' && !this.matchOver) {

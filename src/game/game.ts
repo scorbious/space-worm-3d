@@ -178,6 +178,9 @@ export class Game {
     this.mode = 'title'
     this.demoTarget = null
     this.cam.h = 70
+    this.audio.setBoosting(false)
+    this.audio.setWell(0)
+    this.audio.setScene('title')
   }
 
   start(mode: Mode): void {
@@ -187,6 +190,8 @@ export class Game {
     this.sim.events.length = 0
     this.view.bind(this.sim)
     this.mode = 'playing'
+    this.audio.setEnvironmentMusic(this.sim.environment)
+    this.audio.setScene('arena')
     this.snapCamera()
     this.lastTarget = null
     this.input.clearBoost()
@@ -232,6 +237,7 @@ export class Game {
   // ─── simulation ─────────────────────────────────────────────────────────
   step(dt: number): void {
     if (this.mode === 'paused') return
+    const environmentDt = this.mode === 'playing' || this.mode === 'dead' ? dt : 0
     // Hit-stop: a few frames of slow motion sell big impacts.
     if (this.hitstop > 0) {
       this.hitstop -= dt
@@ -239,7 +245,7 @@ export class Game {
     }
     if (this.streakTimer > 0) this.streakTimer -= dt
     const control = this.mode === 'playing' ? this.control() : null
-    this.sim.step(dt, control)
+    this.sim.step(dt, control, environmentDt)
     this.handleEvents()
     if (this.mode === 'dead' && this.sim.mode === 'team' && !this.sim.matchOver) {
       this.respawnTimer -= dt
@@ -462,6 +468,7 @@ export class Game {
           this.mode = 'ended'
           this.audio.setBoosting(false)
           this.audio.setWell(0)
+          this.audio.setScene('results')
           const winner = e.scores[0] === e.scores[1] ? -1 : e.scores[0] > e.scores[1] ? 0 : 1
           this.audio.play(winner === 0 ? 'win' : 'lose')
           this.hooks.matchEnd({ scores: e.scores, winner, playerTeam: 0 })
@@ -556,6 +563,7 @@ export class Game {
     const dt = Math.min(0.1, frameSeconds)
     const sim = this.sim
     const P = sim.player
+    if (this.mode === 'playing' || this.mode === 'dead' || this.mode === 'paused') this.audio.setEnvironmentMusic(sim.environment)
     let tx = this.focus.x
     let tz = this.focus.z
     let th = this.cam.h
