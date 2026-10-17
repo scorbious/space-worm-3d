@@ -4,9 +4,19 @@
 
 - [x] خادم WebSocket v2 مستقل يملك حالة المباراة، الحركة، الطعام، الاصطدامات، الإقصاءات، إعادة الظهور، النقاط، المؤقت، المراحل ونصف قطر الساحة، ولا يقبل إحداثيات أو نقاطًا من العميل.
 - [x] إرسال مدخلات الحركة فقط من العميل إلى الخادم، snapshots authoritative مع interpolation، Ping، heartbeat، إعادة الاتصال واستئناف المقعد خلال 60 ثانية.
-- [x] دمج المباراة الأونلاين مع HUD والنتائج وروابط الدعوة، مع إبقاء FFA وTeam المحليين وقواعدهما وميزات الولائم/الفخاخ منفصلة.
+- [x] دمج المباراة الأونلاين مع HUD والنتائج وروابط الدعوة، مع إبقاء FFA وTeam المحليين وقواعدهما وميزات الولائم والفخاخ منفصلة.
 - [x] اختبارات بروتوكول وتكامل HTTP/WebSocket تشمل بدء الغرفة، رفض spoofing، الحركة، boost، ping، disconnect/resume وmatchEnd.
 - [x] توثيق التشغيل المحلي ومتغيرات البيئة وحدود MVP والاستضافة؛ لا يوجد WSS عام في GitHub Pages لأن Pages لا يشغل Node/WebSocket.
-- [ ] نشر خدمة WebSocket دائمة خلف TLS، ضبط `ALLOWED_ORIGINS`، ثم وضع عنوان `wss://` الحقيقي في bootstrap وإعادة بناء الواجهة. الحالة الحالية جاهزة للنشر لكنها لا تدّعي وجود خادم عام قبل تهيئته.
+- [ ] نشر خدمة WebSocket دائمة خلف TLS، ضبط `ALLOWED_ORIGINS`، ثم وضع عنوان `wss://` الحقيقي في bootstrap وإعادة بناء الواجهة.
 
-التحقق: 152 اختبار Vitest ناجح، 18 اختبار multiplayer ناجح، typecheck وbuild وdiff-check ناجحة. فحص المتصفح البروتوكولي الكامل نجح عبر اختبارات Node؛ فحص Playwright متعدد السياقات يحتاج مراجعة إضافية لاتصال الدعوة الحمراء قبل اعتباره دليلًا نهائيًا. النسخة الأونلاين MVP لا تزامن حاليًا celestials/powers/hazards/crowns/traps المحلية، ولا تحفظ الغرف بعد إعادة تشغيل الخادم، ولا توفر ranked accounts أو latency compensation.
+التحقق: 152 اختبار Vitest ناجح، و18 اختبار multiplayer ناجح، وtypecheck وbuild وdiff-check ناجحة. النسخة الأونلاين MVP لا تزامن حاليًا celestials/powers/hazards/crowns/traps المحلية، ولا تحفظ الغرف بعد إعادة تشغيل الخادم، ولا توفر ranked accounts أو latency compensation.
+
+## 10. Optional free P2P transport — Firebase / WebRTC
+
+- [x] إعداد Firebase Web SDK اختياري من `VITE_FIREBASE_*`، anonymous auth، حضور وإشارات room-scoped، تنظيف leave/onDisconnect/TTL منطقي، ورسائل إعداد عربية/إنجليزية عند غياب الإعداد.
+- [x] منشئ الغرفة هو المضيف الأول، ثم انتقال deterministic حسب `joinedAt` و`peerId` عبر transaction/lease/epoch fencing، دون اختيار عشوائي.
+- [x] المضيف يعيد استخدام محاكاة المباراة authoritative، والعملاء يرسلون controls فقط ويستقبلون snapshots/events؛ migration تستعيد snapshot مخزنة أو تبدأ resync/restart واضحًا.
+- [x] اختيار peer/server، إنشاء وانضمام غرف P2P، روابط `transport=peer`، حالات Free P2P/Host/Connected/Waiting، وخروج نظيف مع بقاء أوضاع اللعب المحلية كما هي.
+- [x] قواعد Firebase تمنع قراءة الغرف الأخرى وكتابة score/state authoritative، مع توثيق Spark وNAT/TURN وحدود الغش، دون نشر credentials وهمية.
+- [x] اختبارات election/validation/failover/transfer وFirebase emulator المحلي، مع نجاح typecheck/test/multiplayer:test/build/diff-check.
+- [ ] ربط مشروع Firebase حقيقي وتشغيل smoke test عبر متصفحين وشبكتين مختلفتين؛ لا يمكن إكمال ذلك قبل تزويد إعدادات مشروع Firebase الحقيقي أو ربطه.

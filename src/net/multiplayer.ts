@@ -1,5 +1,7 @@
 import type { HeadStyle, WormColor } from '../game/appearance'
+import type { PeerClient } from './p2p'
 export const ONLINE_PROTOCOL = 'spaceworm-3v3-v2'
+export type MultiplayerTransport = 'peer' | 'server'
 export type Team = 'blue' | 'red'
 export type PlayerSeat = { id: string; slot: number; name: string; skin: string; ready: boolean; connected: boolean; host: boolean }
 export type LobbyState = {
@@ -24,7 +26,7 @@ export type OnlineSnapshot = {
   players: OnlinePlayer[]; food: OnlineFood[]; events: OnlineEvent[]; winner?: Team | 'draw'
 }
 export type OnlineMatchEnd = OnlineSnapshot & { type: 'matchEnd'; winner: Team | 'draw' }
-export type MultiplayerStatus = 'idle' | 'loading' | 'connecting' | 'reconnecting' | 'connected' | 'unavailable' | 'error'
+export type MultiplayerStatus = 'idle' | 'loading' | 'connecting' | 'reconnecting' | 'connected' | 'waiting' | 'unavailable' | 'error'
 export type MultiplayerCallbacks = {
   onWelcome: (welcome: { room: string; playerId: string; team: Team | 'spectator'; slot: number; host: boolean }) => void
   onState: (state: LobbyState) => void
@@ -32,6 +34,7 @@ export type MultiplayerCallbacks = {
   onMatchSnapshot: (snapshot: OnlineSnapshot) => void
   onMatchEnd: (snapshot: OnlineMatchEnd) => void
   onPing?: (milliseconds: number) => void
+  onResync?: () => void
 }
 export type OnlineProfile = { name: string; skin: string; color?: WormColor; headStyle?: HeadStyle }
 const tokenKey = (room: string, team: string) => `spaceworm.multiplayer.v2.${room}.${team}`
@@ -80,6 +83,9 @@ export function isOnlineSnapshot(v: unknown): v is OnlineSnapshot {
 
 export class MultiplayerClient {
   private socket: WebSocket | null = null
+  private peer: PeerClient | null = null
+  private transport: MultiplayerTransport = import.meta.env.VITE_MULTIPLAYER_TRANSPORT === 'peer' ? 'peer' : 'server'
+  private settingsLoaded = false
   private endpoint = ''
   private room = ''
   private team: Team = 'blue'
@@ -104,9 +110,67 @@ export class MultiplayerClient {
   get currentTeam(): Team { return this.team }
   get currentPlayerId(): string { return this.playerId }
   get currentState(): LobbyState | null { return this.lastState }
-  get isConnected(): boolean { return this.socket?.readyState === WebSocket.OPEN }
+  get currentTransport(): MultiplayerTransport { return this.transport }
+  get isConnected(): boolean { return this.peer ? this.peer.isConnected : this.socket?.readyState === WebSocket.OPEN }
+
+  setTransport(transport: MultiplayerTransport): void {
+    if (transport === this.transport) return
+    this.leave(); this.transport = transport; this.settingsLoaded = true
+  }
+  async loadTransport(): Promise<MultiplayerTransport> {
+    if (!this.settingsLoaded) {
+      this.settingsLoaded = true
+      try {
+        const response = await fetch(new URL('multiplayer/bootstrap.json', document.baseURI), { cache: 'no-store', signal: AbortSignal.timeout(8000) })
+        const config: unknown = response.ok ? await response.json() : null
+        if (object(config)) {
+          if (!import.meta.env.VITE_MULTIPLAYER_TRANSPORT && (config.transport === 'peer' || config.transport === 'server')) this.transport = config.transport
+          const configured = (import.meta.env.VITE_MULTIPLAYER_URL as string | undefined)?.trim()
+          if (!configured && typeof config.signalingUrl === 'string' && config.signalingUrl.trim()) this.validateEndpoint(config.signalingUrl)
+        }
+      } catch { /* A missing bootstrap never disables local or configured transports. */ }
+      const invited = new URLSearchParams(location.search).get('transport')
+      if (invited === 'peer' || invited === 'server') this.transport = invited
+    }
+    return this.transport
+  }
+  async prepare(): Promise<void> {
+    await this.loadTransport()
+    if (this.transport === 'server') await this.loadEndpoint()
+    else {
+      try { const { firebaseConfig } = await import('./firebaseSignaling'); firebaseConfig(import.meta.env) }
+      catch (error) { this.callbacks.onStatus('unavailable', (error as Error).message); throw error }
+    }
+  }
+  async createPeerRoom(profile: OnlineProfile, team: Team = 'blue'): Promise<void> { await this.openPeer(null, team, profile) }
+  async joinPeerRoom(room: string, team: Team, profile: OnlineProfile): Promise<void> {
+    if (!/^[A-Z0-9]{5,8}$/.test(room.toUpperCase())) throw new Error('invalid_room')
+    await this.openPeer(room.toUpperCase(), team, profile)
+  }
+  private async openPeer(room: string | null, team: Team, profile: OnlineProfile): Promise<void> {
+    const generation = ++this.generation
+    this.leaveConnection(); this.transport = 'peer'; this.settingsLoaded = true
+    this.profile = profile; this.team = team; this.room = ''; this.playerId = ''; this.lastState = null
+    const { PeerClient } = await import('./p2p')
+    if (generation !== this.generation) return
+    const active = () => generation === this.generation
+    const peer = new PeerClient({ ...this.callbacks,
+      onWelcome: welcome => { if (active()) { this.room = welcome.room; this.playerId = welcome.playerId; this.callbacks.onWelcome(welcome) } },
+      onState: state => { if (active()) { this.lastState = state; this.callbacks.onState(state) } },
+      onStatus: (status, detail) => { if (active()) this.callbacks.onStatus(status, detail) },
+      onMatchSnapshot: snapshot => { if (active()) this.callbacks.onMatchSnapshot(snapshot) },
+      onMatchEnd: snapshot => { if (active()) this.callbacks.onMatchEnd(snapshot) },
+      onResync: () => { if (active()) this.callbacks.onResync?.() },
+      onPing: ping => { if (active()) { this.ping = ping; this.callbacks.onPing?.(ping) } },
+    })
+    this.peer = peer
+    try { await peer.open(room, team, profile) }
+    catch (error) { peer.close(); if (this.peer === peer) this.peer = null; throw error }
+  }
 
   async create(profile: OnlineProfile, team: Team = 'blue'): Promise<void> {
+    await this.loadTransport()
+    if (this.transport === 'peer') return this.createPeerRoom(profile, team)
     const generation = ++this.generation
     this.leaveConnection(); this.profile = profile
     await this.loadEndpoint()
@@ -119,6 +183,8 @@ export class MultiplayerClient {
   }
   async join(room: string, team: Team, profile: OnlineProfile): Promise<void> {
     if (!/^[A-Z0-9]{5,8}$/.test(room.toUpperCase())) throw new Error('invalid_room')
+    await this.loadTransport()
+    if (this.transport === 'peer') return this.joinPeerRoom(room, team, profile)
     const generation = ++this.generation
     this.leaveConnection(); this.profile = profile
     await this.loadEndpoint()
@@ -127,6 +193,9 @@ export class MultiplayerClient {
   async joinFromLocation(profile: OnlineProfile): Promise<boolean> {
     const params = new URLSearchParams(location.search), room = params.get('match')?.toUpperCase()
     if (!room) return false
+    await this.loadTransport()
+    if (params.get('transport') === 'peer') this.transport = 'peer'
+    else if (params.get('transport') === 'server') this.transport = 'server'
     await this.join(room, params.get('team') === 'red' ? 'red' : 'blue', profile)
     return true
   }
@@ -142,14 +211,17 @@ export class MultiplayerClient {
         const config: unknown = await response.json()
         if (object(config) && typeof config.signalingUrl === 'string') endpoint = config.signalingUrl.trim()
       }
-      const url = new URL(endpoint)
-      if (!['ws:', 'wss:'].includes(url.protocol) || url.username || url.password || (location.protocol === 'https:' && url.protocol !== 'wss:')) throw new Error('multiplayer_unavailable')
-      this.endpoint = url.toString()
+      this.validateEndpoint(endpoint)
       return this.endpoint
     } catch {
       this.callbacks.onStatus('unavailable', 'multiplayer_unavailable')
       throw new Error('multiplayer_unavailable')
     }
+  }
+  private validateEndpoint(endpoint: string): void {
+    const url = new URL(endpoint)
+    if (!['ws:', 'wss:'].includes(url.protocol) || url.username || url.password || (location.protocol === 'https:' && url.protocol !== 'wss:')) throw new Error('multiplayer_unavailable')
+    this.endpoint = url.toString()
   }
   private connectRoom(room: string, team: Team): void {
     this.intentionalClose = false; this.room = room.toUpperCase(); this.team = team
@@ -221,13 +293,14 @@ export class MultiplayerClient {
     } catch (e) { this.callbacks.onStatus('error', (e as Error).message === 'protocol_mismatch' ? 'protocol_mismatch' : 'invalid_server_message') }
   }
   sendInput(targetAngle: number, boost: boolean): void {
+    if (this.peer) { this.peer.sendInput(targetAngle, boost); return }
     const now = performance.now()
     if (!this.playerId || !this.isConnected || now - this.lastInputSent < 50 || !Number.isFinite(targetAngle)) return
     this.lastInputSent = now
     this.send({ type: 'input', targetAngle: Math.atan2(Math.sin(targetAngle), Math.cos(targetAngle)), boost, seq: this.inputSeq++ })
   }
-  ready(value: boolean): void { this.send({ type: 'ready', value }) }
-  start(): void { this.send({ type: 'start' }) }
+  ready(value: boolean): void { if (this.peer) this.peer.ready(value); else this.send({ type: 'ready', value }) }
+  start(): void { if (this.peer) this.peer.start(); else this.send({ type: 'start' }) }
   leave(): void {
     ++this.generation
     this.send({ type: 'leave' }); this.leaveConnection()
@@ -237,13 +310,18 @@ export class MultiplayerClient {
   }
   invite(team: Team): string {
     const url = new URL(location.href); url.search = ''; url.searchParams.set('match', this.room); url.searchParams.set('team', team)
+    url.searchParams.set('transport', this.transport)
     return url.toString()
   }
   async copyInvite(team: Team): Promise<void> { await navigator.clipboard.writeText(this.invite(team)) }
   private send(payload: Record<string, unknown>): void {
     if (this.socket?.readyState === WebSocket.OPEN && this.socket.bufferedAmount < 64 * 1024) this.socket.send(JSON.stringify({ ...payload, protocol: ONLINE_PROTOCOL }))
   }
-  private leaveConnection(): void { this.intentionalClose = true; this.send({ type: 'leave' }); this.closeSocket() }
+  close(): void { this.leave() }
+  private leaveConnection(): void {
+    this.intentionalClose = true; this.send({ type: 'leave' }); this.closeSocket()
+    this.peer?.close(); this.peer = null
+  }
   private closeSocket(): void {
     window.clearTimeout(this.reconnectTimer); window.clearInterval(this.pingTimer); window.clearTimeout(this.connectTimer); this.pendingPing = 0
     const socket = this.socket; this.socket = null

@@ -12,7 +12,7 @@ import type { FeedItem, Game, HudState, LifeResult, MatchResult, ThreatArrow } f
 import { glyphSvg, type GlyphId } from '../game/glyphs'
 import type { HintId } from '../game/threats'
 import { formatClock, type Mode, type Records } from '../game/rules'
-import type { LobbyState, MultiplayerStatus, OnlineMatchEnd, PlayerSeat } from '../net/multiplayer'
+import type { LobbyState, MultiplayerStatus, MultiplayerTransport, OnlineMatchEnd, PlayerSeat } from '../net/multiplayer'
 import { icon } from './icons'
 import { Minimap } from './minimap'
 import { Sparks } from './sparks'
@@ -73,6 +73,7 @@ export class Ui {
   private lobbyDetail = ''
   private lobbyTeam: 'blue' | 'red' | 'spectator' = 'blue'
   private lobbyHost = false
+  private lobbyTransport: MultiplayerTransport = 'server'
   private lastCombo = 0
   private loadingChoice: ((v: 'play' | 'cancel') => void) | null = null
   reduced = false
@@ -338,6 +339,8 @@ export class Ui {
         return
       case 'mp-create-blue':
       case 'mp-create-red':
+      case 'mp-transport-peer':
+      case 'mp-transport-server':
       case 'mp-join-blue':
       case 'mp-join-red':
       case 'mp-ready':
@@ -573,7 +576,9 @@ export class Ui {
   setMultiplayerStatus(status: MultiplayerStatus, detail = ''): void {
     this.lobbyStatus = status
     const known = ['multiplayer_unavailable', 'invalid_room', 'clipboard_denied', 'protocol_mismatch', 'seat_replaced',
-      'connection_rejected', 'resume_expired', 'invalid_server_message', 'room_create_failed', 'not_ready', 'not_ready_to_start', 'invalid_input', 'invalid_message']
+      'connection_rejected', 'resume_expired', 'invalid_server_message', 'room_create_failed', 'not_ready', 'not_ready_to_start', 'invalid_input', 'invalid_message',
+      'peer_config_missing', 'peer_auth_required', 'peer_room_unavailable', 'peer_rules_denied', 'peer_not_supported', 'peer_connection_failed', 'peer_invalid_stun',
+      'peer_signaling_offline', 'peer_migrating', 'peer_migrated', 'peer_resync', 'peer_room_expired']
     this.lobbyDetail = detail ? `multiplayer.errors.${known.includes(detail) ? detail : 'connection_rejected'}` : ''
     if (this.screen === 'multiplayer') this.renderMultiplayer()
   }
@@ -588,8 +593,14 @@ export class Ui {
   onlineSnapshotReady(): void { this.onlineWaiting = false }
 
   private multiplayerStatusText(): string {
-    const key = this.onlineWaiting && this.lobbyStatus === 'connected' ? 'matchLoading' : this.lobbyStatus
-    return this.t(`multiplayer.${key}`)
+    const key = this.onlineWaiting && this.lobbyStatus === 'connected' ? this.lobbyTransport === 'peer' ? 'peerMatchLoading' : 'matchLoading' : this.lobbyStatus
+    const status = this.t(`multiplayer.${key}`)
+    return this.lobbyTransport === 'peer' ? `${this.t('multiplayer.peer')} · ${this.lobbyHost ? `${this.t('multiplayer.host')} · ` : ''}${status}` : status
+  }
+
+  setMultiplayerTransport(transport: MultiplayerTransport): void {
+    this.lobbyTransport = transport
+    if (this.screen === 'multiplayer') this.renderMultiplayer()
   }
 
   setMultiplayerWelcome(team: 'blue' | 'red' | 'spectator', host: boolean): void {
@@ -609,7 +620,7 @@ export class Ui {
     const statusText = this.multiplayerStatusText()
     const s = this.lobbyState
     const seat = (player: PlayerSeat | null) => player
-      ? `<li class="seat ${player.connected ? 'online' : 'offline'}"><b>${esc(player.name)}</b><span>${player.ready ? this.t('multiplayer.ready') : this.t('multiplayer.notReady')}</span></li>`
+      ? `<li class="seat ${player.connected ? 'online' : 'offline'}"><b>${esc(player.name)}${player.host ? ` · ${this.t('multiplayer.host')}` : ''}</b><span>${player.ready ? this.t('multiplayer.ready') : this.t('multiplayer.notReady')}</span></li>`
       : `<li class="seat empty">${this.t('multiplayer.openSeat')}</li>`
     const teamCard = (team: 'blue' | 'red', label: string) => {
       const players = s?.teams[team] ?? [null, null, null]
@@ -619,15 +630,16 @@ export class Ui {
     const roomCode = s?.room ?? ''
     el.innerHTML = `
       <header class="lobby-head"><div><p class="eyebrow">${this.t('multiplayer.eyebrow')}</p><h2>${this.t('multiplayer.title')}</h2></div>${roomCode ? `<span class="room-code">${esc(roomCode)}</span>` : ''}</header>
+      ${!hasRoom ? `<div class="transport-selector" role="group" aria-label="${esc(this.t('multiplayer.transport'))}"><button class="btn ${this.lobbyTransport === 'peer' ? 'primary' : 'ghost'}" data-action="mp-transport-peer" aria-pressed="${this.lobbyTransport === 'peer'}">${this.t('multiplayer.peer')}</button><button class="btn ${this.lobbyTransport === 'server' ? 'primary' : 'ghost'}" data-action="mp-transport-server" aria-pressed="${this.lobbyTransport === 'server'}">${this.t('multiplayer.server')}</button></div>` : ''}
       <p class="lobby-status ${this.lobbyStatus}">${statusText}${this.lobbyDetail ? ` · ${esc(this.t(this.lobbyDetail))}` : ''}</p>
-      ${hasRoom ? `<p class="lobby-instruction">${this.t(s?.phase === 'running' ? 'multiplayer.running' : s?.development ? 'multiplayer.testHint' : 'multiplayer.inviteHint')}</p>
+      ${hasRoom ? `<p class="lobby-instruction">${this.t(this.lobbyTransport === 'peer' ? s?.phase === 'running' ? 'multiplayer.peerRunning' : 'multiplayer.peerHint' : s?.phase === 'running' ? 'multiplayer.running' : s?.development ? 'multiplayer.testHint' : 'multiplayer.inviteHint')}</p>
         <div class="team-lobby-grid">${teamCard('blue', this.t('hud.team.blue'))}${teamCard('red', this.t('hud.team.orange'))}</div>
         <div class="lobby-actions">
           ${s?.phase === 'waiting' && this.lobbyTeam !== 'spectator' ? `<button class="btn primary" data-action="mp-ready">${this.t('multiplayer.readyUp')}</button>` : ''}
-          ${s?.phase === 'waiting' && this.lobbyHost ? `<button class="btn primary" data-action="mp-start" ${s.readyToStart ? '' : 'disabled'}>${this.t(s.development ? 'multiplayer.startTest' : 'multiplayer.start')}</button>` : ''}
+          ${s?.phase === 'waiting' && this.lobbyHost ? `<button class="btn primary" data-action="mp-start" ${s.readyToStart ? '' : 'disabled'}>${this.t(this.lobbyTransport === 'peer' ? 'multiplayer.peerStart' : s.development ? 'multiplayer.startTest' : 'multiplayer.start')}</button>` : ''}
           <button class="btn ghost" data-action="mp-leave">${this.t('multiplayer.leave')}</button>
         </div>`
-        : `<p class="lobby-instruction">${this.t('multiplayer.description')}</p>
+        : `<p class="lobby-instruction">${this.t(this.lobbyTransport === 'peer' ? 'multiplayer.peerDescription' : 'multiplayer.description')}</p>
           <div class="lobby-create"><button class="btn primary" data-action="mp-create-blue">${this.t('multiplayer.createBlue')}</button><button class="btn primary red" data-action="mp-create-red">${this.t('multiplayer.createRed')}</button></div>
           <div class="lobby-join"><label>${this.t('multiplayer.roomLabel')}<input data-mp-room maxlength="8" autocomplete="off" placeholder="ABC123" /></label><div><button class="btn ghost" data-action="mp-join-blue">${this.t('multiplayer.joinBlue')}</button><button class="btn ghost" data-action="mp-join-red">${this.t('multiplayer.joinRed')}</button></div></div>`}
       <p class="lobby-foot">${this.t('multiplayer.credit')}</p>
@@ -641,6 +653,7 @@ export class Ui {
     url.search = ''
     url.searchParams.set('match', room)
     url.searchParams.set('team', team)
+    url.searchParams.set('transport', this.lobbyTransport)
     return url.toString()
   }
 
@@ -722,7 +735,7 @@ export class Ui {
     el.innerHTML = `<p class="eyebrow">${esc(this.t('multiplayer.roundEnd'))}</p><h2>${esc(this.t(title))}</h2>
       <div class="online-result-scores"><span>${esc(this.t('hud.team.blue'))} <b>${this.i18n.n(result.scores.blue)}</b></span>
       <span>${esc(this.t('hud.team.orange'))} <b>${this.i18n.n(result.scores.red)}</b></span></div>
-      <p>${esc(this.t('multiplayer.resultsHint'))}</p><ol class="online-results">${[...result.players].sort((a, b) => b.score - a.score).map(p =>
+      <p>${esc(this.t(this.lobbyTransport === 'peer' ? 'multiplayer.peerResultsHint' : 'multiplayer.resultsHint'))}</p><ol class="online-results">${[...result.players].sort((a, b) => b.score - a.score).map(p =>
         `<li class="${p.team}"><b>${esc(p.name)}</b><span>${esc(this.t('multiplayer.playerResult', { score: this.i18n.n(p.score), kills: p.kills }))}</span></li>`).join('')}</ol>
       <button class="btn primary" data-action="mp-leave">${esc(this.t('multiplayer.leaveMatch'))}</button>`
   }

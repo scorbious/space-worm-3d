@@ -6,3 +6,8 @@ shots/
 /assets/models/stage-beacon.glb
 /assets/share/favicon.png
 /assets/share/og.png
+.env
+.env.local
+.env.*.local
+firebase-debug.log
+database-debug.log

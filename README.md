@@ -114,3 +114,21 @@ resets it only at the next run using that run's active values. `Game` snapshots 
 `RunState.unranked`; local results cannot save such runs. Preserve this guard when changing
 scoring. When adding online leaderboards, skip submissions for unranked runs and enforce
 eligibility in the authoritative server too; client flags are not proof of a fair score.
+
+## Optional free P2P multiplayer
+
+The multiplayer screen now offers **Free P2P** (`peer`) alongside the existing
+**authoritative WebSocket server** (`server`, still the default). P2P uses real Firebase
+Realtime Database signaling/anonymous auth and WebRTC DataChannels; the elected browser
+host reuses the server's Match engine. See [Firebase setup, rules and limitations](docs/P2P.md).
+Configure the blank `VITE_FIREBASE_*` fields in `.env.local` and publish the supplied rules
+to your own project before using P2P. No Firebase project/configuration was deployed here.
+
+**P2P is casual, not anti-cheat.** Host election is deterministic and epoch/lease-fenced;
+migration restores a cached snapshot or explicitly starts a new round. Restrictive NATs
+may need TURN or server mode. Local FFA/Team and existing server room/start/resume behavior
+remain independent. Pure tests need no Firebase/network; the optional local emulator check is:
+
+```sh
+pnpm dlx firebase-tools emulators:exec --project demo-spaceworm-test --only database "node scripts/test-firebase-rules.mjs"
+```

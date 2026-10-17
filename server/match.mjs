@@ -68,6 +68,30 @@ export class Match {
     this.replenishFood()
   }
 
+  /** P2P migration only: caller validates the public snapshot before restoring it.
+   * Steering intent/rate windows reset; scores, bodies, timers and sequence IDs survive.
+   * Public snapshots omit RNG/boost-cost internals, so future food is deterministically reseeded.
+   */
+  static fromSnapshot(snapshot) {
+    const match = new Match([], { seed: snapshot.tick + 1, seconds: snapshot.timeLeft + snapshot.tick * DT, foodCount: 0 })
+    Object.assign(match, {
+      tick: snapshot.tick, seq: snapshot.seq, phase: snapshot.phase,
+      duration: snapshot.timeLeft + snapshot.tick * DT, timeLeft: snapshot.timeLeft,
+      stage: snapshot.arena.stage, arenaRadius: snapshot.arena.radius, scores: { ...snapshot.scores },
+      food: snapshot.food.map(f => ({ ...f })), foodCount: snapshot.food.length,
+      events: snapshot.events.map(e => ({ ...e })),
+      nextFoodId: Math.max(0, ...snapshot.food.map(f => f.id)) + 1,
+      nextEventId: Math.max(0, ...snapshot.events.map(e => e.id)) + 1,
+    })
+    for (const p of snapshot.players) match.players.set(p.id, {
+      ...p, xs: [...p.xs], zs: [...p.zs], targetAngle: p.angle, boost: false, boosting: false,
+      lastInputTick: -100, inputWindow: 0, inputCount: 0, boostCost: 0,
+      respawnTick: snapshot.tick + Math.round(p.respawnIn / DT),
+      invulnerableUntil: snapshot.tick + Math.round(p.spawnGrace / DT),
+    })
+    return match
+  }
+
   event(type, data = {}) {
     this.events.push({ id: this.nextEventId++, tick: this.tick, type, ...data })
     // Repeated in snapshots so one dropped frame does not lose FX; clients deduplicate by id.
@@ -127,7 +151,7 @@ export class Match {
 
   setConnected(id, connected) {
     const w = this.players.get(id)
-    if (w) { w.connected = connected; w.boost = false; w.boosting = false; w.lastInputTick = -100 }
+    if (w && w.connected !== connected) { w.connected = connected; w.boost = false; w.boosting = false; w.lastInputTick = -100 }
   }
 
   removePlayer(id) { this.players.delete(id) }

@@ -128,7 +128,11 @@ async function boot(): Promise<void> {
       if (!network) return
       if (action === 'open') {
         ui.show('multiplayer')
-        network.loadEndpoint().catch(error => ui.setMultiplayerStatus('unavailable', String((error as Error).message)))
+        void network.loadTransport().then(transport => { ui.setMultiplayerTransport(transport); return network!.prepare() }).catch(error => ui.setMultiplayerStatus('unavailable', String((error as Error).message)))
+      } else if (action === 'transport-peer' || action === 'transport-server') {
+        network.setTransport(action === 'transport-peer' ? 'peer' : 'server')
+        ui.clearMultiplayer(); ui.setMultiplayerTransport(network.currentTransport)
+        void network.prepare().catch(error => ui.setMultiplayerStatus('unavailable', String((error as Error).message)))
       } else if (action === 'create-blue' || action === 'create-red') {
         ui.show('multiplayer')
         void network.create(profile(), action.endsWith('red') ? 'red' : 'blue').catch(error => ui.setMultiplayerStatus('error', String((error as Error).message)))
@@ -152,7 +156,7 @@ async function boot(): Promise<void> {
   })
   uiRef = ui
   network = new MultiplayerClient({
-    onWelcome: welcome => ui.setMultiplayerWelcome(welcome.team, welcome.host),
+    onWelcome: welcome => { ui.setMultiplayerTransport(network!.currentTransport); ui.setMultiplayerWelcome(welcome.team, welcome.host) },
     onState: state => {
       ui.setMultiplayerState(state)
       if (state.phase === 'running' && ui.screen === 'multiplayer') {
@@ -180,6 +184,7 @@ async function boot(): Promise<void> {
       audio.play(snapshot.winner === network.currentTeam ? 'win' : 'lose')
     },
     onPing: milliseconds => { if (game) game.onlinePing = milliseconds },
+    onResync: () => { if (game?.isOnline) game.toTitle(); ui.showOnlineLoading() },
   })
   ui.show('boot')
   applySettings(save.data)
@@ -285,6 +290,7 @@ async function boot(): Promise<void> {
     if (document.hidden) pause()
   })
   window.addEventListener('game:pause', pause)
+  window.addEventListener('pagehide', () => network?.close())
   window.setTimeout(() => {
     ui.show('title')
     assets.startBackground()
