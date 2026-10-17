@@ -3,6 +3,12 @@
  * game orchestrator feeds player intent in. Everything advances only in fixed `step(dt)` calls.
  */
 import { CONFIG } from './config'
+import { appearanceSkin, validColor, validHead, type HeadStyle, type WormColor } from './appearance'
+import { environmentFor } from './environmentDefs'
+import {
+  isDominant, SPECIALS, surpriseInterval, trapDuration, TRAP_IDS,
+  type SurpriseId, type TimedTrapId, type TrapId,
+} from './specials'
 import {
   BOT_NAMES, CELESTIALS, CELESTIAL_IDS, PICKUP_IDS, SKINS,
   type CelestialId, type PickupId,
@@ -44,6 +50,12 @@ export type Worm = {
   isPlayer: boolean
   team: number
   skin: string
+  color: WormColor
+  headStyle: HeadStyle
+  shrinkLeft: number
+  traps: Record<TimedTrapId, number>
+  /** Recovery includes the active trap duration, preventing chained immobilization. */
+  trapGrace: number
   alive: boolean
   xs: number[]
   zs: number[]
@@ -94,6 +106,8 @@ export type Celestial = { id: number; kind: CelestialId; x: number; z: number; v
 export type Asteroid = { x: number; z: number; r: number; seed: number }
 export type Gate = { ax: number; az: number; bx: number; bz: number; period: number; on: number; offset: number }
 export type Well = { x: number; z: number; r: number }
+export type Surprise = { id: number; kind: SurpriseId; ownerId: number; x: number; z: number; alive: boolean; expiresAt: number }
+export type Trap = { id: number; kind: TrapId; x: number; z: number; alive: boolean; expiresAt: number }
 
 export type DeathCause = 'worm' | 'self' | 'rim' | 'asteroid' | 'gate' | 'head'
 
@@ -113,6 +127,14 @@ export type SimEvent =
   | { type: 'spawn'; worm: Worm }
   | { type: 'stage'; stage: number; radius: number }
   | { type: 'matchEnd'; scores: [number, number] }
+  | { type: 'surpriseSpawn'; surprise: Surprise }
+  | { type: 'surpriseExpire'; surprise: Surprise }
+  | { type: 'surprise'; worm: Worm; kind: SurpriseId; duration: number; x: number; z: number }
+  | { type: 'zoneWarning'; remaining: number }
+  | { type: 'zoneEnd'; radius: number }
+  | { type: 'shrinkEnd'; worm: Worm }
+  | { type: 'trap'; worm: Worm; kind: TrapId; duration: number; resisted: boolean; x: number; z: number }
+  | { type: 'trapEnd'; worm: Worm; kind: TimedTrapId }
 
 export type PlayerControl = { targetAngle: number | null; turn: number; boost: boolean }
 
@@ -166,11 +188,22 @@ function segDistance(px: number, pz: number, ax: number, az: number, bx: number,
 
 const wrapAngle = (a: number) => Math.atan2(Math.sin(a), Math.cos(a))
 
-export type SimOptions = { mode: Mode; seed?: number; playerName: string; playerSkin: string; bots?: number }
+export type SimOptions = { mode: Mode; seed?: number; playerName: string; playerSkin: string; playerColor?: WormColor; headStyle?: HeadStyle; bots?: number }
 
 export class Sim {
   readonly mode: Mode
+  readonly environmentOffset: number
+  get environment() { return environmentFor(this.stage, this.environmentOffset) }
   radius = CONFIG.arena.radius
+  /** Stage growth and legendary growth survive the expiration of a temporary zone. */
+  baseRadius = CONFIG.arena.radius
+  permanentExpansion = 0
+  zoneLeft = 0
+  surprises: Surprise[] = []
+  traps: Trap[] = []
+  private zoneWarned = false
+  private surpriseCooldown: number = SPECIALS.firstSurprise
+  private trapCooldown = 0
   stage = 1
   time = 0
   worms: Worm[] = []
@@ -195,9 +228,12 @@ export class Sim {
 
   constructor(opts: SimOptions) {
     this.mode = opts.mode
+    this.environmentOffset = Math.abs(opts.seed ?? Math.floor(Math.random() * 10000)) % 6
     this.random = rng(opts.seed ?? (Math.random() * 2 ** 31) | 0)
     this.buildHazards()
     this.player = this.createWorm(opts.playerName, true, opts.mode === 'team' ? 0 : -1, opts.playerSkin)
+    this.player.color = validColor(opts.playerColor)
+    this.player.headStyle = validHead(opts.headStyle)
     if (opts.mode === 'team') {
       this.matchLeft = CONFIG.team.seconds
       for (let i = 0; i < 5; i++) this.createWorm(this.botName(), false, 0, this.randomSkin())
@@ -211,6 +247,7 @@ export class Sim {
     for (let i = 0; i < CONFIG.arena.stardust; i++) this.spawnShard()
     for (let i = 0; i < CONFIG.arena.pickups; i++) this.spawnPickup()
     for (let i = 0; i < CONFIG.arena.celestials; i++) this.spawnCelestial()
+    for (const kind of TRAP_IDS) this.spawnTrap(kind)
   }
 
   // ─── setup ──────────────────────────────────────────────────────────────
@@ -269,6 +306,7 @@ export class Sim {
   private createWorm(name: string, isPlayer: boolean, team: number, skin: string): Worm {
     const w: Worm = {
       id: this.nextId++, name, isPlayer, team, skin, alive: false, xs: [], zs: [], kinds: [],
+      color: 'skin', headStyle: 'round', shrinkLeft: 0, traps: { freeze: 0, slow: 0, reverse: 0 }, trapGrace: 0,
       angle: 0, targetAngle: 0, turnAxis: 0, mass: CONFIG.worm.startLength, radius: radiusForLength(CONFIG.worm.startLength),
       boosting: false, wantBoost: false, dropTimer: 0, stacks: emptyStacks(), magnet: 0, shield: 0, freeBoost: 0,
       envGrace: 0, spawnGrace: 0, speed: 0, slowed: false, peak: 0, kills: 0, celestials: 0, shards: 0, born: 0, bites: 0, biteImmuneId: -1, biteImmuneUntil: 0,
@@ -330,6 +368,9 @@ export class Sim {
     w.magnet = 0
     w.shield = 0
     w.freeBoost = 0
+    w.shrinkLeft = 0
+    w.traps = { freeze: 0, slow: 0, reverse: 0 }
+    w.trapGrace = 0
     w.envGrace = 0
     w.spawnGrace = 2.2
     w.boosting = false
@@ -478,6 +519,7 @@ export class Sim {
       }
     }
     this.updateCrown()
+    this.updateSpecials(dt)
     this.rebuildGrid()
     for (const w of this.worms) {
       if (!w.alive) continue
@@ -507,7 +549,8 @@ export class Sim {
       this.player.xs.length >= threshold ? index + 1 : current, 1)
     if (next <= this.stage) return
     this.stage = next
-    this.radius = CONFIG.arena.radius + (this.stage - 1) * 30
+    this.baseRadius = CONFIG.arena.radius + (this.stage - 1) * 30
+    this.refreshRadius()
     for (const w of this.worms) if (w.brain) {
       w.brain.aggression = Math.min(1, w.brain.aggression + 0.14)
       w.brain.skill = Math.min(0.98, w.brain.skill + 0.04)
@@ -539,17 +582,25 @@ export class Sim {
     w.spawnGrace = Math.max(0, w.spawnGrace - dt)
     w.gulp += dt
 
+    if (w.traps.freeze > 0) {
+      w.speed = 0
+      w.boosting = false
+      w.slowed = true
+      this.resize(w)
+      return
+    }
     const len = w.xs.length
     const canBoost = w.freeBoost > 0 || len > CONFIG.worm.minBoostLength
     w.boosting = w.wantBoost && canBoost
 
     // Turning
     const rate = turnRateFor(w.radius) * (w.boosting ? 0.85 : 1)
+    const reverse = w.traps.reverse > 0 ? -1 : 1
     if (w.turnAxis !== 0) {
-      w.angle = wrapAngle(w.angle + Math.max(-1, Math.min(1, w.turnAxis)) * rate * 1.05 * dt)
+      w.angle = wrapAngle(w.angle + Math.max(-1, Math.min(1, w.turnAxis)) * reverse * rate * 1.05 * dt)
       w.targetAngle = w.angle
     } else {
-      const diff = wrapAngle(w.targetAngle - w.angle)
+      const diff = wrapAngle(w.targetAngle - w.angle) * reverse
       const maxTurn = rate * dt
       w.angle = wrapAngle(w.angle + Math.max(-maxTurn, Math.min(maxTurn, diff)))
     }
@@ -558,7 +609,8 @@ export class Sim {
     let speed = (w.boosting ? CONFIG.worm.boostSpeed * (w.freeBoost > 0 ? 1.08 : 1) : CONFIG.worm.baseSpeed) * fx.speed
     let hx = w.xs[0]
     let hz = w.zs[0]
-    w.slowed = false
+    w.slowed = w.traps.slow > 0
+    if (w.slowed) speed *= 0.48
     let pullX = 0
     let pullZ = 0
     for (const well of this.wells) {
@@ -612,8 +664,7 @@ export class Sim {
   }
 
   private skinColor(w: Worm): number {
-    const skin = SKINS.find(s => s.id === w.skin) ?? SKINS[0]
-    return skin.colors[0]
+    return appearanceSkin(w.skin, w.color).colors[0]
   }
 
   /** Match segment count to mass: grow at the tail, shrink by removing plain segments. */
@@ -634,7 +685,7 @@ export class Sim {
       w.zs.splice(idx, 1)
       w.kinds.splice(idx, 1)
     }
-    w.radius = radiusForLength(w.xs.length)
+    w.radius = radiusForLength(w.xs.length) * (w.shrinkLeft > 0 ? SPECIALS.shrinkScale : 1)
   }
 
   // ─── collisions ─────────────────────────────────────────────────────────
@@ -790,7 +841,7 @@ export class Sim {
     v.zs.length = keep
     v.kinds.length = keep
     v.mass = keep + (v.mass % 1)
-    v.radius = radiusForLength(keep)
+    v.radius = radiusForLength(keep) * (v.shrinkLeft > 0 ? SPECIALS.shrinkScale : 1)
     v.combo = 0
     v.comboTimer = 0
     if (biter) {
@@ -905,6 +956,24 @@ export class Sim {
           this.events.push({ type: 'pickup', worm: w, kind: p.kind, x: p.x, z: p.z })
         }
       }
+      // These require direct contact with the mouth; magnets cannot trigger traps or rare drops.
+      for (const s of this.surprises) {
+        if (!s.alive || this.time >= s.expiresAt) continue
+        if (Math.hypot(s.x - hx, s.z - hz) < w.radius + 1.6) {
+          s.alive = false
+          this.applySurprise(w, s.kind, s.x, s.z)
+        }
+      }
+      for (const t of this.traps) {
+        if (!t.alive || this.time >= t.expiresAt) continue
+        if (Math.hypot(t.x - hx, t.z - hz) < w.radius + 1.4) {
+          t.alive = false
+          this.applyTrap(w, t.kind, t.x, t.z)
+          // A teleport changes the mouth position: don't also eat objects at the old location.
+          if (t.kind === 'teleport') break
+        }
+      }
+      if (w.xs[0] !== hx || w.zs[0] !== hz) continue
       for (const c of this.celestials) {
         if (!c.alive) continue
         const def = CELESTIALS[c.kind]
@@ -1005,6 +1074,147 @@ export class Sim {
     }
   }
 
+  // ─── local surprises & traps ────────────────────────────────────────────
+  private refreshRadius(): void {
+    this.radius = this.baseRadius + this.permanentExpansion + (this.zoneLeft > 0 ? SPECIALS.zoneExpansion : 0)
+  }
+
+  private specialPointSafe(x: number, z: number, margin = 5): boolean {
+    if (this.blocked(x, z, margin)) return false
+    if (this.gates.some(g => segDistance(x, z, g.ax, g.az, g.bx, g.bz) < margin)) return false
+    if (this.wells.some(w => Math.hypot(x - w.x, z - w.z) < w.r + 2)) return false
+    if (this.traps.some(t => t.alive && Math.hypot(x - t.x, z - t.z) < 9)) return false
+    return !this.worms.some(w => w.alive && w.xs.some((sx, i) => Math.hypot(sx - x, w.zs[i] - z) < margin))
+  }
+
+  private spawnTrap(kind: TrapId = TRAP_IDS[Math.floor(this.random() * TRAP_IDS.length)]): void {
+    for (let i = 0; i < 32; i++) {
+      const p = this.randomPoint(0.86, 0.12)
+      if (!this.specialPointSafe(p.x, p.z)) continue
+      this.traps.push({ id: this.nextId++, kind, ...p, alive: true, expiresAt: this.time + SPECIALS.trapLifetime })
+      return
+    }
+  }
+
+  private updateSpecials(dt: number): void {
+    for (const w of this.worms) {
+      if (!w.alive) continue
+      w.trapGrace = Math.max(0, w.trapGrace - dt)
+      for (const kind of ['freeze', 'slow', 'reverse'] as const) {
+        const was = w.traps[kind]
+        w.traps[kind] = Math.max(0, was - dt)
+        if (was > 0 && w.traps[kind] === 0) this.events.push({ type: 'trapEnd', worm: w, kind })
+      }
+      if (w.shrinkLeft > 0) {
+        w.shrinkLeft = Math.max(0, w.shrinkLeft - dt)
+        if (w.shrinkLeft === 0) {
+          this.resize(w)
+          w.spawnGrace = Math.max(w.spawnGrace, 0.8)
+          this.events.push({ type: 'shrinkEnd', worm: w })
+        }
+      }
+    }
+    if (this.zoneLeft > 0) {
+      this.zoneLeft = Math.max(0, this.zoneLeft - dt)
+      if (!this.zoneWarned && this.zoneLeft <= SPECIALS.returnWarning) {
+        this.zoneWarned = true
+        this.events.push({ type: 'zoneWarning', remaining: this.zoneLeft })
+      }
+      if (this.zoneLeft === 0) {
+        this.refreshRadius()
+        // No unavoidable rim death on return: rescue heads still in the temporary annulus.
+        for (const w of this.worms) if (w.alive && Math.hypot(w.xs[0], w.zs[0]) + w.radius >= this.radius - 2) this.relocate(w)
+        this.events.push({ type: 'zoneEnd', radius: this.radius })
+      }
+    }
+    for (const s of this.surprises) if (s.alive && this.time >= s.expiresAt) {
+      s.alive = false
+      this.events.push({ type: 'surpriseExpire', surprise: s })
+    }
+    this.surprises = this.surprises.filter(s => s.alive)
+    this.traps = this.traps.filter(t => t.alive && this.time < t.expiresAt)
+    if (this.matchOver) return
+    this.trapCooldown -= dt
+    if (this.traps.length < SPECIALS.trapCount && this.trapCooldown <= 0) {
+      this.spawnTrap()
+      this.trapCooldown = SPECIALS.trapRespawn
+    }
+    const dominant = this.ranking().find(w => isDominant(w.xs.length, this.crownId === w.id, w.kills))
+    if (!dominant) return // Count only eligible time, not time spent on a small fresh life.
+    this.surpriseCooldown -= dt
+    if (this.surprises.length || this.surpriseCooldown > 0) return
+    for (let i = 0; i < 24; i++) {
+      const a = dominant.angle + (this.random() - 0.5) * 1.6
+      const distance = 22 + this.random() * 12
+      const x = dominant.xs[0] + Math.cos(a) * distance
+      const z = dominant.zs[0] + Math.sin(a) * distance
+      if (!this.specialPointSafe(x, z, 6)) continue
+      const roll = this.random()
+      const kind: SurpriseId = roll < 0.12 && this.permanentExpansion < SPECIALS.maxLegendaryExpansion ? 'legendary' : roll < 0.56 ? 'zone' : 'shrink'
+      const surprise: Surprise = { id: this.nextId++, kind, ownerId: dominant.id, x, z, alive: true, expiresAt: this.time + SPECIALS.surpriseLifetime }
+      this.surprises.push(surprise)
+      this.surpriseCooldown = surpriseInterval(dominant.xs.length, this.crownId === dominant.id, dominant.kills)
+      this.events.push({ type: 'surpriseSpawn', surprise })
+      return
+    }
+    this.surpriseCooldown = 3 // Retry an obstructed placement quietly, without emitting HUD spam.
+  }
+
+  private applySurprise(w: Worm, kind: SurpriseId, x: number, z: number): void {
+    let duration = 0
+    if (kind === 'zone') {
+      duration = SPECIALS.zoneDuration
+      this.zoneLeft = duration
+      this.zoneWarned = false
+      this.refreshRadius()
+    } else if (kind === 'legendary') {
+      this.permanentExpansion = Math.min(SPECIALS.maxLegendaryExpansion, this.permanentExpansion + SPECIALS.legendaryExpansion)
+      this.refreshRadius()
+    } else {
+      duration = SPECIALS.shrinkDuration
+      w.shrinkLeft = duration
+      this.resize(w) // Physical radius only: length, score, powers and crown eligibility are unchanged.
+    }
+    w.gulp = 0
+    this.events.push({ type: 'surprise', worm: w, kind, duration, x, z })
+  }
+
+  private applyTrap(w: Worm, kind: TrapId, x: number, z: number): void {
+    const resisted = w.shield > 0 || w.trapGrace > 0 || w.spawnGrace > 0
+    if (resisted) {
+      if (w.shield > 0 && w.trapGrace <= 0 && w.spawnGrace <= 0) w.shield = 0
+      w.trapGrace = Math.max(w.trapGrace, SPECIALS.recovery)
+      this.events.push({ type: 'trap', worm: w, kind, duration: 0, resisted: true, x, z })
+      return
+    }
+    const duration = trapDuration(kind, w.stacks.core)
+    w.trapGrace = duration + SPECIALS.recovery
+    if (kind === 'freeze' || kind === 'slow' || kind === 'reverse') w.traps[kind] = duration
+    else if (kind === 'half') {
+      const keep = Math.max(4, Math.floor(w.xs.length / 2))
+      for (const k of w.kinds.slice(keep)) if (k) w.stacks[CELESTIALS[k].power] = Math.max(0, w.stacks[CELESTIALS[k].power] - 1)
+      w.xs.length = w.zs.length = w.kinds.length = keep
+      w.mass = Math.max(4, Math.min(keep + 0.999, w.mass / 2))
+      w.combo = w.comboTimer = 0
+      this.resize(w)
+    } else this.relocate(w)
+    if (kind === 'freeze') { w.speed = 0; w.boosting = false }
+    this.events.push({ type: 'trap', worm: w, kind, duration, resisted: false, x, z })
+  }
+
+  /** Translate the entire chain, preserving length, powers and shape; protect the landing. */
+  private relocate(w: Worm): void {
+    const p = this.safeSpawnPoint(w.team)
+    const dx = p.x - w.xs[0]
+    const dz = p.z - w.zs[0]
+    for (let i = 0; i < w.xs.length; i++) { w.xs[i] += dx; w.zs[i] += dz }
+    w.spawnGrace = Math.max(w.spawnGrace, 2.2)
+    w.envGrace = Math.max(w.envGrace, 1.5)
+    w.targetAngle = w.angle = Math.atan2(-p.z, -p.x)
+    w.turnAxis = 0
+    if (w.brain) { w.brain.think = 0; w.brain.wanderTimer = 0 }
+  }
+
   // ─── AI ─────────────────────────────────────────────────────────────────
   private think(w: Worm, dt: number): void {
     const b = w.brain!
@@ -1033,6 +1243,10 @@ export class Sim {
     for (const p of this.pickups) {
       const d = Math.hypot(p.x - hx, p.z - hz)
       if (d < 40) consider(p.x, p.z, 55 / (d + 4))
+    }
+    for (const s of this.surprises) {
+      const d = Math.hypot(s.x - hx, s.z - hz)
+      if (s.alive && d < (s.expiresAt - this.time) * CONFIG.worm.baseSpeed * 0.8) consider(s.x, s.z, 180 / (d + 4))
     }
     for (const c of this.celestials) {
       if (!canConsume(len, c.kind)) continue
@@ -1166,6 +1380,9 @@ export class Sim {
         }
       }
       if (!d) for (const well of this.wells) if (Math.hypot(px - well.x, pz - well.z) < well.r * 0.7) { d = 0.25; break }
+      if (!d && w.trapGrace <= 0 && w.shield <= 0) {
+        for (const t of this.traps) if (t.alive && Math.hypot(px - t.x, pz - t.z) < r + 2) { d = 1.1; break }
+      }
       total += d * weight
     }
     return total

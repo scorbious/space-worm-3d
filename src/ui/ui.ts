@@ -7,6 +7,7 @@ import type { I18n } from '../engine/i18n'
 import { LOCALES, sanitizeName, type Locale, type SaveData, type SaveStore } from '../engine/save'
 import { CONFIG } from '../game/config'
 import { CELESTIALS, CELESTIAL_IDS, PICKUP_IDS, POWERS, POWER_IDS, SKINS, skinById, type CelestialId, type PickupId } from '../game/content'
+import { appearanceSkin, HEAD_STYLES, validColor, validHead, WORM_COLORS } from '../game/appearance'
 import type { FeedItem, Game, HudState, LifeResult, MatchResult, ThreatArrow } from '../game/game'
 import { glyphSvg, type GlyphId } from '../game/glyphs'
 import type { HintId } from '../game/threats'
@@ -176,6 +177,7 @@ export class Ui {
               </div>`).join('')}
           </div>
           <div class="powers" data-bind="powers"></div>
+          <div class="special-effects" data-bind="specialEffects"></div>
           <div class="status">
             <span class="chip chip-boost" data-bind="boostChip"></span>
             <span class="chip chip-slow">${icon('well')}<span data-i18n="hud.slowed"></span></span>
@@ -184,6 +186,8 @@ export class Ui {
         </div>
         <div class="hud-tc">
           <div class="crown-chip" data-bind="crown"></div>
+          <div class="surprise-alert" data-bind="surprise" role="status" hidden></div>
+          <div class="zone-alert" data-bind="zone" hidden></div>
           <div class="combo" data-bind="comboWrap"><b data-bind="combo"></b><small data-i18n="hud.feast"></small><span class="combo-bar"><i></i></span></div>
         </div>
         <div class="callouts" aria-live="polite"></div>
@@ -215,6 +219,7 @@ export class Ui {
       <section class="screen menu" data-screen="skins">
         <div class="panel card wide">
           <header><h2 data-i18n="skins.title"></h2><div class="wallet">${icon('stardust')}<b data-bind="stardust">0</b></div></header>
+          <div class="appearance" data-bind="appearance"></div>
           <div class="skins" data-bind="skins"></div>
           <footer>${btn('back', 'common.back', 'ghost')}</footer>
         </div>
@@ -349,6 +354,14 @@ export class Ui {
       case 'howto':
         this.subReturn = this.screen
         return this.show(action)
+      case 'appearance-color':
+        this.actions.settings({ color: validColor(el.dataset.color) })
+        this.renderSkins()
+        return
+      case 'appearance-head':
+        this.actions.settings({ headStyle: validHead(el.dataset.head) })
+        this.renderSkins()
+        return
       case 'back':
         this.back()
         return
@@ -471,6 +484,18 @@ export class Ui {
 
   private renderSkins(): void {
     const d = this.save.data
+    const selected = appearanceSkin(d.skin, d.color)
+    const appearance = this.root.querySelector<HTMLElement>('[data-bind="appearance"]')!
+    appearance.innerHTML = `
+      <p class="appearance-note">${esc(this.t('skins.customize'))}</p>
+      <div class="appearance-preview" aria-label="${esc(this.t('skins.preview'))}">
+        ${Array.from({ length: 6 }, (_, i) => `<i class="preview-segment ${i === 5 ? `head-${d.headStyle}` : ''}" style="--c:${hexCss(i === 5 ? selected.head : selected.colors[i % selected.colors.length])}"></i>`).join('')}
+      </div>
+      <h3>${esc(this.t('skins.color'))}</h3>
+      <div class="cosmetic-options">${WORM_COLORS.map(c => `<button class="cosmetic color-choice" data-action="appearance-color" data-color="${c.id}" aria-pressed="${d.color === c.id}" style="--c:${hexCss(c.value ?? skinById(d.skin).head)}"><i></i><span>${esc(this.t(`color.${c.id}`))}</span></button>`).join('')}</div>
+      <h3>${esc(this.t('skins.head'))}</h3>
+      <div class="cosmetic-options heads">${HEAD_STYLES.map(head => `<button class="cosmetic head-choice" data-action="appearance-head" data-head="${head}" aria-pressed="${d.headStyle === head}" style="--c:${hexCss(selected.head)}"><i class="head-${head}"></i><span>${esc(this.t(`head.${head}`))}</span></button>`).join('')}</div>
+      <h3>${esc(this.t('skins.palette'))}</h3>`
     const el = this.root.querySelector<HTMLElement>('[data-bind="skins"]')!
     el.innerHTML = SKINS.map(s => {
       const owned = d.ownedSkins.includes(s.id)
@@ -529,6 +554,10 @@ export class Ui {
         <p class="legend-key"><span class="k lethal">${t('legend.lethal')}</span><span class="k warn">${t('legend.warn')}</span><span class="k slow">${t('legend.slow')}</span><span class="k ally">${t('legend.ally')}</span><span class="k edible">${t('legend.edible')}</span></p>
         <ul class="list legend">${(['asteroid', 'gate', 'well', 'rim', 'rival', 'ally', 'edible', 'bite'] as const).map(id => `<li>${glyphSvg(THREAT_GLYPH[id])}<span><b>${t(`hint.${id}.title`)}</b>${t(`hint.${id}.text`)}</span></li>`).join('')}</ul></section>
       <section><h3>${t('howto.feast')}</h3><p>${t('howto.feastText')}</p></section>
+      <section><h3>${t('howto.specials')}</h3><p>${t('howto.specialsText')}</p>
+        <ul class="list">${['zone', 'legendary', 'shrink'].map(id => `<li><b>${t(`surprise.${id}`)}</b> — ${t(`surprise.${id}.desc`)}</li>`).join('')}</ul></section>
+      <section><h3>${t('howto.traps')}</h3><p>${t('howto.trapsText')}</p>
+        <ul class="list">${['freeze', 'slow', 'reverse', 'half', 'teleport'].map(id => `<li><b>${t(`trap.${id}`)}</b> — ${t(`trap.${id}.desc`)}</li>`).join('')}</ul></section>
       <section><h3>${t('howto.team')}</h3><p>${t('howto.teamText')}</p></section>
       <footer><button class="btn ghost" data-action="back">${t('common.back')}</button></footer>`
   }
@@ -697,10 +726,10 @@ export class Ui {
     const team = game.sim.mode === 'team'
     hud.classList.toggle('is-team', team)
     this.setIf('length', String(h.length), () => this.bind('length', this.i18n.n(h.length)))
-    const stageKey = `${h.stage}|${h.arenaRadius}|${h.nextStageLength ?? 0}`
+    const stageKey = `${h.stage}|${h.environment}|${h.arenaRadius}|${h.nextStageLength ?? 0}`
     this.setIf('stage', stageKey, () => {
       const next = h.nextStageLength ? ` · ${this.t('hud.nextStage', { n: h.nextStageLength })}` : ''
-      this.bind('stage', `${this.t('hud.stage', { n: h.stage })} · ${this.t('hud.arena', { n: Math.round(h.arenaRadius) })}${next}`)
+      this.bind('stage', `${this.t('hud.stage', { n: h.stage })} · ${this.t(`environment.${h.environment}`)} · ${this.t('hud.arena', { n: Math.round(h.arenaRadius) })}${next}`)
     })
     const now = performance.now()
     if (h.length > this.lastLen && now - this.lastLenBump > 140 && !reduced) {
@@ -727,6 +756,32 @@ export class Ui {
       const el = hud.querySelector<HTMLElement>('[data-bind="crown"]')!
       el.className = `crown-chip ${crownKey ? 'is-on' : ''} ${h.crowned ? 'is-me' : ''}`
       el.innerHTML = crownKey ? `${icon('crown')}<span>${esc(h.crowned ? this.t('hud.crownYou') : this.t('hud.crownOther', { name: h.crownName ?? '' }))}</span>` : ''
+    })
+    const rare = hud.querySelector<HTMLElement>('[data-bind="surprise"]')!
+    rare.hidden = !h.surprise
+    if (h.surprise) {
+      const s = h.surprise
+      const text = this.t('hud.surprise', { name: this.t(`surprise.${s.kind}`), n: Math.ceil(s.left) })
+      const distance = this.t('hud.surpriseDistance', { n: Math.ceil(s.distance) })
+      const key = `${text}|${distance}|${Math.round(s.bearing * 180 / Math.PI)}`
+      this.setIf('surprise', key, () => {
+        rare.innerHTML = `<b>${esc(text)}</b><span><i aria-hidden="true" style="transform:rotate(${s.bearing * 180 / Math.PI - 90}deg)">➤</i>${esc(distance)}</span>`
+      })
+      rare.classList.toggle('is-ending', s.left <= 2)
+    }
+    const zone = hud.querySelector<HTMLElement>('[data-bind="zone"]')!
+    zone.hidden = h.zoneLeft <= 0
+    zone.classList.toggle('is-ending', h.zoneLeft <= 5)
+    this.setIf('zone', String(Math.ceil(h.zoneLeft)), () => { zone.textContent = this.t('hud.zone', { n: Math.ceil(h.zoneLeft) }) })
+    const specialEffects: [string, number, boolean][] = [
+      ['surprise.shrink', h.shrinkLeft, false], ['trap.freeze', h.traps.freeze, true],
+      ['trap.slow', h.traps.slow, true], ['trap.reverse', h.traps.reverse, true],
+      ['hud.trapRecovery', h.trapGrace > 0 && !Object.values(h.traps).some(t => t > 0) ? h.trapGrace : 0, false],
+    ]
+    const effectsKey = specialEffects.map(([key, left]) => `${key}:${Math.ceil(left)}`).join('|')
+    this.setIf('specialEffects', effectsKey, () => {
+      hud.querySelector('[data-bind="specialEffects"]')!.innerHTML = specialEffects.filter(([, left]) => left > 0)
+        .map(([key, left, bad]) => `<span class="special-chip ${bad ? 'bad' : ''}">${esc(this.t(key))} · ${esc(this.t('common.seconds', { n: Math.ceil(left) }))}</span>`).join('')
     })
     this.setIf('rank', `${h.rank}/${h.total}`, () => this.bind('rank', h.rank > 0 ? this.t('hud.rank', { rank: h.rank, total: h.total }) : ''))
     this.setIf('kills', String(h.kills), () => this.bind('kills', String(h.kills)))

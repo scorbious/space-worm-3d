@@ -3,6 +3,7 @@
  * it is easy to migrate. Corrupt or foreign data falls back to defaults instead of crashing.
  */
 import { SKINS } from '../game/content'
+import { validColor, validHead, type HeadStyle, type WormColor } from '../game/appearance'
 import { emptyRecords, LOCAL_BOARD_SIZE, type LifeEntry, type Records } from '../game/rules'
 
 export type Locale = 'en' | 'ar'
@@ -28,6 +29,9 @@ export type SaveData = {
   stardust: number
   ownedSkins: string[]
   skin: string
+  /** Additive v1 migration: missing/invalid choices preserve the original appearance. */
+  color: WormColor
+  headStyle: HeadStyle
   records: Records
   lives: LifeEntry[]
   /** Global leaderboard participation is strictly opt-in. */
@@ -54,6 +58,8 @@ export function defaultSave(): SaveData {
     stardust: 0,
     ownedSkins: ['nebula'],
     skin: 'nebula',
+    color: 'skin',
+    headStyle: 'round',
     records: emptyRecords(),
     lives: [],
     globalOptIn: false,
@@ -113,6 +119,8 @@ export function parseSave(raw: string | null): SaveData {
     stardust: nonNegInt(data.stardust),
     ownedSkins: owned,
     skin,
+    color: validColor(data.color),
+    headStyle: validHead(data.headStyle),
     records,
     lives,
     globalOptIn: data.globalOptIn === true,

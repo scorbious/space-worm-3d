@@ -8,8 +8,13 @@ import stageBeaconUrl from '../../assets/models/stage-beacon.glb?url'
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
 import { assets } from '../engine/assets'
 import { CONFIG } from './config'
-import { CELESTIALS, skinById, TEAM_COLORS, type CelestialId, type Skin } from './content'
+import { CELESTIALS, TEAM_COLORS, type CelestialId, type Skin } from './content'
 import { Fx } from './fx'
+import { appearanceSkin } from './appearance'
+import { headGeometry } from './headShapes'
+import { ArenaEnvironment } from './environments'
+import { SPECIAL_COLORS } from './specials'
+import { disposeSpecial, makeSpecial } from './specialVisuals'
 import { THREAT_COLORS } from './glyphs'
 import { Particles } from './particles'
 import { canConsume } from './rules'
@@ -29,6 +34,7 @@ type HeadView = {
   pupils: THREE.Mesh[]
   mouth: THREE.Mesh
   halo: THREE.Mesh
+  status: THREE.Mesh
   shield: THREE.Mesh
   shieldMat: THREE.ShaderMaterial
   magnet: THREE.Mesh
@@ -57,6 +63,7 @@ const NOVA_HUES = [0xff7ad9, 0x7ad9ff, 0xfff27a, 0x8dffb8, 0xc6a0ff]
 export class View {
   readonly scene = new THREE.Scene()
   readonly camera: THREE.PerspectiveCamera
+  readonly environment = new ArenaEnvironment()
   /** Threat Language markers; `threats` is set by the game each frame before `update`. */
   readonly marks = new ThreatMarks()
   threats: ThreatReport | null = null
@@ -76,6 +83,7 @@ export class View {
   private celSegPool = new Map<CelestialId, CelestialVisual[]>()
   private freeCel = new Map<number, FreeCelestialView>()
   private pickups = new Map<number, THREE.Group>()
+  private specials = new Map<number, THREE.Group>()
   private gates: GateView[] = []
   private wellMats: THREE.ShaderMaterial[] = []
   private asteroidMeshes: THREE.Mesh[] = []
@@ -105,6 +113,7 @@ export class View {
     this.buildBackground()
     this.scene.add(this.hazards)
     this.scene.add(this.marks.group)
+    this.scene.add(this.environment.group)
 
     this.body = new THREE.InstancedMesh(new THREE.SphereGeometry(1, 18, 12), jellyMaterial(true), MAX_SEGMENTS)
     this.body.instanceMatrix.setUsage(THREE.DynamicDrawUsage)
@@ -295,12 +304,14 @@ export class View {
         if (m.material && !Array.isArray(m.material) && (m.material as THREE.Material).userData.shared !== true) (m.material as THREE.Material).dispose()
       })
     }
-    for (const h of this.heads.values()) this.scene.remove(h.group)
+    for (const h of this.heads.values()) this.disposeHead(h)
     this.heads.clear()
     for (const v of this.freeCel.values()) this.scene.remove(v.visual, v.ring, v.label)
     this.freeCel.clear()
     for (const p of this.pickups.values()) this.scene.remove(p)
     this.pickups.clear()
+    for (const s of this.specials.values()) { this.scene.remove(s); disposeSpecial(s) }
+    this.specials.clear()
     for (const pool of this.celSegPool.values()) for (const v of pool) v.visible = false
     this.particles.clear()
     this.fx.clear()
@@ -428,6 +439,8 @@ export class View {
     }
     const t = this.time
     const calm = this.reducedMotion
+    const background = this.environment.update(sim.environment, t, sim.radius, calm)
+    ;(this.scene.background as THREE.Color).setHex(background)
     this.fx.reduced = calm
     this.starMat.uniforms.uTime.value = t
     this.starMat.uniforms.uTwinkle.value = calm ? 0 : 1
@@ -531,6 +544,45 @@ export class View {
       }
     }
 
+    // Rare drops and traps are distinct from normal pickups: gold vs red ground outlines.
+    const seenSpecials = new Set<number>()
+    for (const s of [...sim.surprises, ...sim.traps]) {
+      if (!s.alive || s.expiresAt <= sim.time) continue
+      seenSpecials.add(s.id)
+      let v = this.specials.get(s.id)
+      const rare = 'ownerId' in s
+      if (!v) {
+        v = makeSpecial(s.kind, !rare)
+        if (rare) {
+          const timer = makeLabel('', '#fff1b8', 1.5)
+          timer.name = 'timer'
+          timer.position.y = 4
+          v.add(timer)
+        }
+        this.specials.set(s.id, v)
+        this.scene.add(v)
+      }
+      v.visible = !cull(s.x, s.z, 7)
+      v.position.set(s.x, 0.3 + (calm ? 0 : Math.sin(t * 3 + s.id) * 0.25), s.z)
+      v.getObjectByName('core')!.rotation.y = calm ? 0 : t * 1.3
+      if (rare) {
+        const secs = Math.ceil(s.expiresAt - sim.time)
+        if (v.userData.seconds !== secs) {
+          v.userData.seconds = secs
+          const timer = v.getObjectByName('timer') as THREE.Sprite
+          const mat = timer.material as THREE.SpriteMaterial
+          mat.map = labelTexture(String(secs), secs <= 2 ? '#ff6b8a' : '#fff1b8')
+          timer.scale.set(1.5 * (mat.map.userData.aspect as number), 1.5, 1)
+          mat.needsUpdate = true
+        }
+      }
+    }
+    for (const [id, v] of this.specials) if (!seenSpecials.has(id)) {
+      this.scene.remove(v)
+      disposeSpecial(v)
+      this.specials.delete(id)
+    }
+
     // Free celestials
     const seenCel = new Set<number>()
     for (const c of sim.celestials) {
@@ -578,7 +630,7 @@ export class View {
     const seenHeads = new Set<number>()
     for (const w of sim.worms) {
       if (!w.alive) continue
-      const skin = skinById(w.skin)
+      const skin = appearanceSkin(w.skin, w.color)
       const len = w.xs.length
       const flicker = w.spawnGrace > 0 && !calm && Math.floor(t * 12) % 2 === 0
       const dim = w.spawnGrace > 0 ? (calm ? 0.55 : flicker ? 0.3 : 0.75) : 1
@@ -657,8 +709,9 @@ export class View {
 
   private updateHead(w: Worm, skin: Skin, team: boolean, t: number, calm: boolean, dim: number, visible: boolean, crowned: boolean, threat?: RivalThreat): void {
     let h = this.heads.get(w.id)
-    if (!h || h.skin !== skin.id) {
-      if (h) this.scene.remove(h.group)
+    const appearanceKey = `${skin.id}:${w.color}:${w.headStyle}`
+    if (!h || h.skin !== appearanceKey) {
+      if (h) this.disposeHead(h)
       h = this.makeHead(w, skin, team)
       this.heads.set(w.id, h)
       this.scene.add(h.group)
@@ -678,8 +731,8 @@ export class View {
     const glance = Math.max(-0.12, Math.min(0.12, Math.atan2(Math.sin(w.targetAngle - w.angle), Math.cos(w.targetAngle - w.angle)) * 0.2))
     if (t > h.blinkAt + 0.14) h.blinkAt = t + 2.2 + Math.random() * 3.5
     const blink = !calm && t > h.blinkAt ? 0.12 : 1
-    for (let k = 0; k < 2; k++) {
-      const side = k === 0 ? -1 : 1
+    for (let k = 0; k < h.eyes.length; k++) {
+      const side = h.eyes.length === 1 ? 0 : k === 0 ? -1 : 1
       h.eyes[k].position.set(0.5 * R, 0.55 * R, side * 0.42 * R)
       h.eyes[k].scale.set(0.34 * R, 0.34 * R * blink, 0.34 * R)
       h.pupils[k].position.set(0.72 * R, 0.66 * R, side * 0.42 * R + glance * r)
@@ -688,6 +741,13 @@ export class View {
     h.mouth.position.set(0.92 * R, 0.02 * R, 0)
     h.mouth.scale.set(0.12 * R, (0.08 + chew * 0.22) * R, 0.36 * R)
     h.halo.scale.setScalar(r * 1.8)
+    const effect = w.traps.freeze > 0 ? 'freeze' : w.traps.slow > 0 ? 'slow' : w.traps.reverse > 0 ? 'reverse' : w.shrinkLeft > 0 ? 'shrink' : null
+    h.status.visible = effect !== null
+    if (effect) {
+      ;(h.status.material as THREE.MeshBasicMaterial).color.setHex(SPECIAL_COLORS[effect])
+      h.status.scale.setScalar(r * 2.5)
+      h.status.rotation.z = calm ? 0 : t * (effect === 'reverse' ? -2 : 1)
+    }
     h.shield.visible = w.shield > 0
     if (h.shield.visible) {
       h.shield.scale.setScalar(r * 2.2 * (calm ? 1 : 1 + 0.04 * Math.sin(t * 6)))
@@ -735,11 +795,29 @@ export class View {
     lm.needsUpdate = true
     h.label.scale.set(1.5 * (tex.userData.aspect as number), 1.5, 1)
   }
+
+  private disposeHead(h: HeadView): void {
+    this.scene.remove(h.group)
+    const geometries = new Set<THREE.BufferGeometry>()
+    const materials = new Set<THREE.Material>()
+    h.group.traverse(object => {
+      if (object instanceof THREE.Mesh) {
+        // Procedural head shapes and the magnet ring are shared across living worms.
+        if (object !== h.head && object.geometry !== this.magnetGeo) geometries.add(object.geometry)
+      }
+      if (object instanceof THREE.Mesh || object instanceof THREE.Sprite) {
+        for (const mat of Array.isArray(object.material) ? object.material : [object.material]) materials.add(mat)
+      }
+    })
+    for (const geometry of geometries) geometry.dispose()
+    for (const material of materials) material.dispose()
+  }
+
   private makeHead(w: Worm, skin: Skin, team: boolean): HeadView {
     const group = new THREE.Group()
     const headMat = jellyMaterial(false, skin.glow)
     headMat.uniforms.uColor.value.setHex(skin.head)
-    const head = new THREE.Mesh(new THREE.SphereGeometry(1, 28, 20), headMat)
+    const head = new THREE.Mesh(headGeometry(w.headStyle), headMat)
     group.add(head)
     const eyeGeo = new THREE.SphereGeometry(1, 16, 12)
     const white = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.15, emissive: 0xffffff, emissiveIntensity: 0.12 })
@@ -747,7 +825,7 @@ export class View {
     const pupilMat = new THREE.MeshBasicMaterial({ color: pupilColor })
     const pupils: THREE.Mesh[] = []
     const eyes: THREE.Mesh[] = []
-    for (let k = 0; k < 2; k++) {
+    for (let k = 0; k < (w.headStyle === 'cyclops' ? 1 : 2); k++) {
       const eye = new THREE.Mesh(eyeGeo, white)
       const pupil = new THREE.Mesh(eyeGeo, pupilMat)
       group.add(eye, pupil)
@@ -761,6 +839,11 @@ export class View {
     halo.rotation.x = -Math.PI / 2
     halo.position.y = -1.2
     group.add(halo)
+    const status = new THREE.Mesh(new THREE.RingGeometry(0.96, 1.04, 6), new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.85, side: THREE.DoubleSide, depthWrite: false }))
+    status.rotation.x = -Math.PI / 2
+    status.position.y = -1.1
+    status.visible = false
+    group.add(status)
     const shieldMat = shieldMaterial()
     const shield = new THREE.Mesh(new THREE.SphereGeometry(1, 32, 22), shieldMat)
     shield.visible = false
@@ -780,6 +863,6 @@ export class View {
     const crown = iconSprite('crown', 3)
     crown.visible = false
     group.add(crown)
-    return { group, head, headMat, eyes, pupils, mouth, halo, shield, shieldMat, magnet, boostGlow, label, labelKey: '', crown, skin: skin.id, blinkAt: Math.random() * 3 }
+    return { group, head, headMat, eyes, pupils, mouth, halo, status, shield, shieldMat, magnet, boostGlow, label, labelKey: '', crown, skin: `${skin.id}:${w.color}:${w.headStyle}`, blinkAt: Math.random() * 3 }
   }
 }

@@ -1,6 +1,7 @@
 import { CELESTIALS, PICKUP_COLORS, TEAM_COLORS } from '../game/content'
 import type { Game } from '../game/game'
 import { canBite, canConsume } from '../game/rules'
+import { SPECIAL_COLORS } from '../game/specials'
 
 const hex = (n: number, a = 1) => `rgba(${(n >> 16) & 255},${(n >> 8) & 255},${n & 255},${a})`
 
@@ -91,6 +92,29 @@ export class Minimap {
     for (const p of sim.pickups) {
       ctx.fillStyle = hex(PICKUP_COLORS[p.kind])
       ctx.fillRect(X(p.x) - 1.6 * dpr, Z(p.z) - 1.6 * dpr, 3.2 * dpr, 3.2 * dpr)
+    }
+    for (const t of sim.traps) if (t.alive) {
+      ctx.strokeStyle = hex(SPECIAL_COLORS[t.kind])
+      ctx.lineWidth = 1.3 * dpr
+      ctx.strokeRect(X(t.x) - 2 * dpr, Z(t.z) - 2 * dpr, 4 * dpr, 4 * dpr)
+    }
+    for (const s of sim.surprises) if (s.alive) {
+      ctx.beginPath()
+      ctx.arc(X(s.x), Z(s.z), 4.5 * dpr, 0, Math.PI * 2)
+      ctx.fillStyle = hex(SPECIAL_COLORS[s.kind])
+      ctx.fill()
+      ctx.strokeStyle = '#fff1b8'
+      ctx.lineWidth = 1.5 * dpr
+      ctx.stroke()
+    }
+    if (sim.zoneLeft > 0) {
+      ctx.beginPath()
+      ctx.arc(half, half, (sim.baseRadius + sim.permanentExpansion) * k, 0, Math.PI * 2)
+      ctx.setLineDash([3 * dpr, 2 * dpr])
+      ctx.strokeStyle = sim.zoneLeft <= 5 ? '#ff6b8a' : 'rgba(99,255,224,0.5)'
+      ctx.lineWidth = dpr
+      ctx.stroke()
+      ctx.setLineDash([])
     }
     // Rival worms: heads sized by length; the longest also show their bodies.
     const team = sim.mode === 'team'

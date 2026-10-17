@@ -14,6 +14,9 @@ import type { Renderer } from '../engine/renderer'
 import { CONFIG } from './config'
 import { CELESTIALS, skinById, type CelestialId, type PickupId } from './content'
 import { powerEffects, type Mode, type PowerStacks } from './rules'
+import { validColor, validHead, type HeadStyle, type WormColor } from './appearance'
+import { SPECIAL_COLORS, type SurpriseId, type TimedTrapId } from './specials'
+import type { EnvironmentId } from './environmentDefs'
 import { Sim, type DeathCause, type PlayerControl, type Worm } from './sim'
 import { View } from './view'
 
@@ -60,6 +63,7 @@ export type ThreatArrow = { key: string; x: number; y: number; angle: number; gl
 export type HudState = {
   length: number
   stage: number
+  environment: EnvironmentId
   arenaRadius: number
   nextStageLength: number | null
   peak: number
@@ -84,6 +88,11 @@ export type HudState = {
   comboLeft: number
   crowned: boolean
   crownName: string | null
+  surprise: { kind: SurpriseId; left: number; distance: number; bearing: number } | null
+  zoneLeft: number
+  shrinkLeft: number
+  traps: Record<TimedTrapId, number>
+  trapGrace: number
   threatArrows: ThreatArrow[]
   /** A lethal hazard or rival is on the predicted path right now. */
   threatImminent: boolean
@@ -96,7 +105,7 @@ const ray = new THREE.Raycaster()
 const ndc = new THREE.Vector2()
 const hit = new THREE.Vector3()
 
-export type PlayerProfile = () => { name: string; skin: string }
+export type PlayerProfile = () => { name: string; skin: string; color?: WormColor; headStyle?: HeadStyle }
 
 export class Game {
   mode: GameMode = 'title'
@@ -153,12 +162,13 @@ export class Game {
 
   setQuality(q: Quality): void {
     this.renderer.applyQuality(q)
+    this.view.environment.quality = q
   }
 
   // ─── flow ───────────────────────────────────────────────────────────────
   toTitle(): void {
     const p = this.profile()
-    this.sim = new Sim({ mode: 'ffa', playerName: p.name, playerSkin: p.skin })
+    this.sim = new Sim({ mode: 'ffa', playerName: p.name, playerSkin: p.skin, playerColor: p.color, headStyle: p.headStyle })
     this.sim.player.alive = false
     this.sim.player.xs = []
     this.sim.player.zs = []
@@ -173,7 +183,7 @@ export class Game {
   start(mode: Mode): void {
     const p = this.profile()
     this.matchType = mode
-    this.sim = new Sim({ mode, playerName: p.name, playerSkin: p.skin })
+    this.sim = new Sim({ mode, playerName: p.name, playerSkin: p.skin, playerColor: p.color, headStyle: p.headStyle })
     this.sim.events.length = 0
     this.view.bind(this.sim)
     this.mode = 'playing'
@@ -188,6 +198,8 @@ export class Game {
     if (this.mode !== 'dead' || this.sim.matchOver) return
     const p = this.profile()
     this.sim.player.skin = p.skin
+    this.sim.player.color = validColor(p.color)
+    this.sim.player.headStyle = validHead(p.headStyle)
     this.sim.spawnWorm(this.sim.player)
     this.sim.events = this.sim.events.filter(e => e.type !== 'spawn')
     this.mode = 'playing'
@@ -460,6 +472,57 @@ export class Game {
           this.hooks.callout('callout.stage', { n: e.stage }, 3)
           this.hooks.toast('toast.stage', { n: e.stage }, 'power')
           break
+        case 'surpriseSpawn':
+          if (this.mode === 'playing') {
+            this.audio.play('warn', 1.4, 0.6)
+            this.hooks.toast('toast.surpriseSpawn', { name: `surprise.${e.surprise.kind}`, n: 5 }, 'power')
+          }
+          break
+        case 'surpriseExpire':
+          if (this.mode === 'playing') {
+            this.audio.play('expire', 0.9, 0.65)
+            this.hooks.toast('toast.surpriseExpired', {}, 'info')
+          }
+          break
+        case 'surprise':
+          if (this.near(e.x, e.z)) fx.nova(e.x, e.z)
+          if (e.worm === P || e.kind !== 'shrink') {
+            if (this.mode === 'playing') {
+              this.audio.play(e.kind === 'legendary' ? 'crown' : 'power')
+              this.hooks.toast(`toast.surprise.${e.kind}`, { n: e.duration, name: e.worm.name }, 'power')
+            }
+          }
+          break
+        case 'zoneWarning':
+          if (this.mode === 'playing') {
+            this.audio.play('warn')
+            this.hooks.toast('toast.zoneWarning', { n: Math.ceil(e.remaining) }, 'bad')
+          }
+          break
+        case 'zoneEnd':
+          if (this.mode === 'playing') {
+            this.audio.play('expire')
+            this.hooks.toast('toast.zoneEnd', {}, 'info')
+          }
+          break
+        case 'shrinkEnd':
+          if (e.worm === P && this.mode === 'playing') this.hooks.toast('toast.shrinkEnd', {}, 'info')
+          break
+        case 'trap':
+          if (this.near(e.x, e.z)) fx.bite(e.x, e.z, SPECIAL_COLORS[e.kind], 0, e.worm === P)
+          if (e.worm === P) {
+            this.audio.play(e.resisted ? 'shield' : e.kind === 'teleport' ? 'power' : 'bump', 0.8)
+            this.hooks.flash(e.resisted ? 'shield' : 'hit')
+            this.hooks.toast(e.resisted ? 'toast.trapResisted' : `toast.trap.${e.kind}`, { n: Math.ceil(e.duration), name: `trap.${e.kind}` }, e.resisted ? 'good' : 'bad')
+            if (e.kind === 'teleport' && !e.resisted) { this.lastTarget = null; this.snapCamera() }
+          }
+          break
+        case 'trapEnd':
+          if (e.worm === P) {
+            this.audio.play('expire')
+            this.hooks.toast('toast.trapEnd', { name: `trap.${e.kind}` }, 'info')
+          }
+          break
         case 'spawn':
           break
       }
@@ -624,9 +687,11 @@ export class Game {
     if (P.alive && rank > 5) leaders.push({ name: P.name, length: P.xs.length, isPlayer: true, team: P.team, rank })
     const fx = powerEffects(P.stacks)
     void fx
+    const surprise = sim.surprises.find(s => s.alive && s.expiresAt > sim.time)
     return {
       length: P.alive ? P.xs.length : 0,
       stage: sim.stage,
+      environment: sim.environment,
       arenaRadius: sim.radius,
       nextStageLength: sim.nextStageLength(),
       peak: P.peak,
@@ -650,6 +715,15 @@ export class Game {
       comboLeft: P.alive && P.combo > 0 ? Math.max(0, P.comboTimer / CONFIG.feast.comboWindow) : 0,
       crowned: P.alive && sim.crownId === P.id,
       crownName: sim.worms.find(w => w.id === sim.crownId)?.name ?? null,
+      surprise: P.alive && surprise ? {
+        kind: surprise.kind, left: surprise.expiresAt - sim.time,
+        distance: Math.hypot(surprise.x - P.xs[0], surprise.z - P.zs[0]),
+        bearing: Math.atan2(surprise.z - P.zs[0], surprise.x - P.xs[0]) - P.angle,
+      } : null,
+      zoneLeft: sim.zoneLeft,
+      shrinkLeft: P.alive ? P.shrinkLeft : 0,
+      traps: P.alive ? P.traps : { freeze: 0, slow: 0, reverse: 0 },
+      trapGrace: P.alive ? P.trapGrace : 0,
       threatArrows: P.alive ? this.threatArrows() : [],
       threatImminent: !!this.threats?.focus,
     }

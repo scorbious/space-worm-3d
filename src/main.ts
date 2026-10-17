@@ -214,9 +214,10 @@ async function boot(): Promise<void> {
       if (!save.data.seenHints.includes(id)) save.update({ seenHints: [...save.data.seenHints, id] })
       ui.showHint(id)
     },
-  }, () => ({ name: save.data.playerName, skin: save.data.skin }))
+  }, () => ({ name: save.data.playerName, skin: save.data.skin, color: save.data.color, headStyle: save.data.headStyle }))
   game.reducedMotion = save.data.reducedMotion
   game.threatMode = save.data.threatMode
+  game.setQuality(save.data.quality)
   for (const id of save.data.seenHints) game.seenHints.add(id as HintId)
 
   if (import.meta.env.DEV) {
