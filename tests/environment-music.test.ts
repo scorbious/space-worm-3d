@@ -2,6 +2,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { Audio } from '../src/engine/audio'
 import { ENVIRONMENT_MUSIC, EnvironmentSynth, MUSIC_FADE_SECONDS } from '../src/engine/environmentMusic'
 import { ENVIRONMENTS } from '../src/game/environmentDefs'
+import { HEAD_STYLES } from '../src/game/appearance'
+import { HEAD_VOCALS, HEAD_VOCAL_COOLDOWN } from '../src/engine/headVocal'
 
 vi.mock('../src/engine/assets', () => ({ assets: { buffer: () => new ArrayBuffer(1), load: vi.fn() } }))
 
@@ -37,6 +39,7 @@ class Source extends Node {
 class FakeAudioContext {
   state = 'suspended'
   currentTime = 0
+  sampleRate = 48000
   destination = new Node()
   sources: Source[] = []
   oscillators: Source[] = []
@@ -47,6 +50,7 @@ class FakeAudioContext {
   createDynamicsCompressor() { return Object.assign(new Node(), { threshold: new Param(), ratio: new Param() }) }
   createBufferSource() { const source = new Source(); this.sources.push(source); return source }
   createOscillator() { const source = new Source(); this.oscillators.push(source); return source }
+  createBuffer(_channels: number, frames: number, _rate: number) { return { getChannelData: () => new Float32Array(frames) } }
   decodeAudioData() { return Promise.resolve({ duration: 12 }) }
   resume() { this.state = 'running'; return Promise.resolve() }
   close() { this.state = 'closed'; return Promise.resolve() }
@@ -138,5 +142,75 @@ describe('environment-aware arcade music', () => {
     synth.dispose()
     expect(ctx.filters.every(filter => filter.disconnected)).toBe(true)
     expect(ctx.oscillators.every(source => source.disconnected)).toBe(true)
+  })
+})
+
+describe('original head swallow voices', () => {
+  it('has eight distinct finite original gestures, each shorter than one second', () => {
+    expect(new Set(HEAD_STYLES.map(style => JSON.stringify(HEAD_VOCALS[style]))).size).toBe(8)
+    for (const style of HEAD_STYLES) {
+      const voice = HEAD_VOCALS[style]
+      expect(voice.duration).toBeLessThan(1)
+      expect(voice.pitches.every(hz => Number.isFinite(hz) && hz > 20)).toBe(true)
+    }
+  })
+  it.each(HEAD_STYLES)('%s schedules bounded finite nodes and disconnects everything after its envelope', async style => {
+    const audio = new Audio(), ctx = audio.ctx as unknown as FakeAudioContext
+    const baseGains = ctx.gains.length
+    audio.unlock(); await Promise.resolve()
+    audio.playHeadVocal(style, 1.3)
+    const sources = [...ctx.oscillators, ...ctx.sources]
+    expect(sources.length).toBeGreaterThan(0)
+    expect(sources.length).toBeLessThanOrEqual(5)
+    expect(sources.every(source => source.stopAt <= 0.85)).toBe(true)
+    ctx.advance(1)
+    expect(sources.every(source => source.disconnected)).toBe(true)
+    expect(ctx.filters.every(filter => filter.disconnected)).toBe(true)
+    expect(ctx.gains.slice(baseGains).every(gain => gain.disconnected)).toBe(true)
+    audio.dispose()
+  })
+  it('requires unlock and running state, and blocks muted/zero-volume/zero-strength calls', async () => {
+    const audio = new Audio(), ctx = audio.ctx as unknown as FakeAudioContext
+    ctx.state = 'running'; audio.playHeadVocal('cat')
+    expect(ctx.oscillators).toHaveLength(0)
+    audio.unlock(); await Promise.resolve()
+    audio.setVolumes(1, 1, true); audio.playHeadVocal('cat')
+    audio.setVolumes(1, 0); audio.playHeadVocal('cat')
+    audio.setVolumes(1, 0.2); audio.playHeadVocal('cat', 0)
+    ctx.state = 'suspended'; audio.playHeadVocal('cat')
+    expect(ctx.oscillators).toHaveLength(0)
+    ctx.state = 'running'; audio.playHeadVocal('cat')
+    expect(ctx.oscillators.length).toBeGreaterThan(0)
+    expect(ctx.gains[2].gain.value).toBeCloseTo(0.18) // Existing SFX bus scales the voice too.
+    audio.dispose()
+  })
+  it('enforces a global audio-clock cooldown even if the selected style changes', async () => {
+    const audio = new Audio(), ctx = audio.ctx as unknown as FakeAudioContext
+    audio.unlock(); await Promise.resolve()
+    audio.playHeadVocal('round')
+    const count = ctx.oscillators.length
+    ctx.advance(HEAD_VOCAL_COOLDOWN - 0.001)
+    audio.playHeadVocal('dragon')
+    expect(ctx.oscillators).toHaveLength(count)
+    ctx.advance(0.002); audio.playHeadVocal('dragon')
+    expect(ctx.oscillators.length).toBeGreaterThan(count)
+    audio.dispose()
+  })
+  it('muting or disposing stops live voice nodes immediately and prevents further playback', async () => {
+    const audio = new Audio(), ctx = audio.ctx as unknown as FakeAudioContext
+    const baseGains = ctx.gains.length
+    audio.unlock(); await Promise.resolve()
+    audio.playHeadVocal('dragon')
+    audio.setVolumes(1, 1, true)
+    expect(ctx.oscillators.every(source => source.disconnected)).toBe(true)
+    expect(ctx.sources.every(source => source.disconnected)).toBe(true)
+    audio.setVolumes(1, 1); ctx.advance(2); audio.playHeadVocal('cat')
+    audio.dispose()
+    expect(ctx.gains.slice(baseGains).every(gain => gain.disconnected)).toBe(true)
+    expect(ctx.filters.every(filter => filter.disconnected)).toBe(true)
+    const count = ctx.oscillators.length
+    audio.playHeadVocal('crystal')
+    expect(ctx.oscillators).toHaveLength(count)
+    expect(vi.getTimerCount()).toBe(0)
   })
 })

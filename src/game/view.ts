@@ -13,7 +13,8 @@ import { Fx } from './fx'
 import { appearanceSkin } from './appearance'
 import { HEAD_FEATURES, headGeometry } from './headShapes'
 import { bodyArmorGeometry, headArmorGeometry } from './headArmor'
-import { ARMOR_PROFILES, armorTier } from './growthVisuals'
+import { ARMOR_PROFILES, armorTier, growthMaterial, growthSkinPalette } from './growthVisuals'
+import { easeMouth, GULP_FACE_SECONDS, gulpFace, preyMouthTarget } from './faceFeedback'
 import { ArenaEnvironment } from './environments'
 import { SPECIAL_COLORS } from './specials'
 import { disposeSpecial, makeSpecial } from './specialVisuals'
@@ -24,7 +25,7 @@ import type { Sim, Worm } from './sim'
 import { ThreatMarks, type ThreatMode } from './threatMarks'
 import type { RivalThreat, ThreatReport } from './threats'
 import {
-  animateCelestial, asteroidGeometry, crystalMaterial, glowQuadMaterial, glowTexture, iconSprite, jellyMaterial,
+  animateCelestial, asteroidGeometry, crystalFruitGeometry, crystalMaterial, disposeCelestial, fruitLeafGeometry, glowQuadMaterial, glowTexture, iconSprite, jellyMaterial,
   labelTexture, makeCelestial, makeLabel, makePickup, metalMaterial, rockMaterial, shieldMaterial, type CelestialVisual,
 } from './visuals'
 
@@ -39,6 +40,9 @@ type HeadView = {
   eyes: THREE.Mesh[]
   pupils: THREE.Mesh[]
   mouth: THREE.Mesh
+  teeth: THREE.Mesh[]
+  tongue: THREE.Mesh
+  mouthOpen: number
   halo: THREE.Mesh
   status: THREE.Mesh
   shield: THREE.Mesh
@@ -67,6 +71,7 @@ const tmpMat = new THREE.Matrix4()
 const tmpPos = new THREE.Vector3()
 const tmpScale = new THREE.Vector3()
 const UP = new THREE.Vector3(0, 1, 0)
+const CANDY_TILT = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), 1.05)
 const NOVA_HUES = [0xff7ad9, 0x7ad9ff, 0xfff27a, 0x8dffb8, 0xc6a0ff]
 
 export class View {
@@ -87,6 +92,8 @@ export class View {
   private body: THREE.InstancedMesh
   private bodyArmor: THREE.InstancedMesh
   private orbs: THREE.InstancedMesh
+  private fruitLeaves: THREE.InstancedMesh
+  private feastRings: THREE.InstancedMesh
   private orbGlow: THREE.InstancedMesh
   private shards: THREE.InstancedMesh
   private heads = new Map<number, HeadView>()
@@ -107,6 +114,8 @@ export class View {
   private bulges = new Map<number, number[]>()
   private time = 0
   private stage = 0
+  private gulpFlashes = new Map<number, { at: number; strength: number }>()
+  private bodyMetal = new THREE.InstancedBufferAttribute(new Float32Array(MAX_SEGMENTS), 1)
 
   constructor() {
     this.camera = new THREE.PerspectiveCamera(CONFIG.camera.fov, window.innerWidth / window.innerHeight, 0.5, 3000)
@@ -126,6 +135,8 @@ export class View {
     this.body = new THREE.InstancedMesh(new THREE.SphereGeometry(1, 18, 12), jellyMaterial(true), MAX_SEGMENTS)
     this.body.instanceMatrix.setUsage(THREE.DynamicDrawUsage)
     this.body.setColorAt(0, new THREE.Color(1, 1, 1))
+    this.bodyMetal.setUsage(THREE.DynamicDrawUsage)
+    this.body.geometry.setAttribute('aMetal', this.bodyMetal)
     this.body.frustumCulled = false
     this.body.count = 0
     this.scene.add(this.body)
@@ -137,12 +148,20 @@ export class View {
     this.bodyArmor.count = 0
     this.scene.add(this.bodyArmor)
 
-    this.orbs = new THREE.InstancedMesh(new THREE.OctahedronGeometry(1, 0), crystalMaterial(), MAX_ORBS)
+    this.orbs = new THREE.InstancedMesh(crystalFruitGeometry(), crystalMaterial(), MAX_ORBS)
     this.orbs.instanceMatrix.setUsage(THREE.DynamicDrawUsage)
     this.orbs.setColorAt(0, new THREE.Color(1, 1, 1))
     this.orbs.frustumCulled = false
     this.orbs.count = 0
     this.scene.add(this.orbs)
+    this.fruitLeaves = new THREE.InstancedMesh(fruitLeafGeometry(), new THREE.MeshStandardMaterial({ color: 0x8dffcc, emissive: 0x207754, emissiveIntensity: 0.35, roughness: 0.28, metalness: 0.25 }), MAX_ORBS)
+    this.feastRings = new THREE.InstancedMesh(new THREE.TorusGeometry(1.35, 0.065, 5, 24), new THREE.MeshBasicMaterial({ color: 0xffe6b0 }), MAX_ORBS)
+    for (const mesh of [this.fruitLeaves, this.feastRings]) {
+      mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage)
+      mesh.frustumCulled = false
+      mesh.count = 0
+      this.scene.add(mesh)
+    }
     this.orbGlow = new THREE.InstancedMesh(new THREE.PlaneGeometry(1, 1), glowQuadMaterial(), MAX_ORBS + MAX_SHARDS)
     this.orbGlow.instanceMatrix.setUsage(THREE.DynamicDrawUsage)
     this.orbGlow.setColorAt(0, new THREE.Color(1, 1, 1))
@@ -259,7 +278,13 @@ export class View {
     }
     for (const h of this.heads.values()) this.disposeHead(h)
     this.heads.clear()
-    for (const v of this.freeCel.values()) this.scene.remove(v.visual, v.ring, v.label)
+    for (const v of this.freeCel.values()) {
+      this.scene.remove(v.visual, v.ring, v.label)
+      disposeCelestial(v.visual)
+      v.ring.geometry.dispose()
+      ;(v.ring.material as THREE.Material).dispose()
+      v.label.material.dispose()
+    }
     this.freeCel.clear()
     for (const p of this.pickups.values()) this.scene.remove(p)
     this.pickups.clear()
@@ -269,6 +294,7 @@ export class View {
     this.particles.clear()
     this.fx.clear()
     this.bulges.clear()
+    this.gulpFlashes.clear()
     this.gates = []
     this.wellMats = []
     this.marks.bind(sim)
@@ -371,6 +397,11 @@ export class View {
     this.bulges.set(wormId, list)
   }
 
+  /** Separate from Sim.gulp: cosmetics expire even when a worm leaves the camera. */
+  flashGulp(wormId: number, strength = 1): void {
+    this.gulpFlashes.set(wormId, { at: this.time, strength })
+  }
+
   /** 0..1 estimate of how busy the frame is (particles and worms on screen). */
   get heat(): number {
     return Math.min(1, this.particles.load * 1.4 + Math.max(0, this.visibleWorms - 6) / 12)
@@ -381,6 +412,7 @@ export class View {
     const sim = this.sim
     if (!sim) return
     this.time += dt
+    for (const [id, flash] of this.gulpFlashes) if (this.time - flash.at >= GULP_FACE_SECONDS) this.gulpFlashes.delete(id)
     this.applyStageVisuals(sim.stage, sim.radius)
     if (this.stageBeacon) {
       this.stageBeacon.visible = sim.stage >= 2
@@ -425,6 +457,7 @@ export class View {
     // Motes (+ glow halos) and stardust
     let n = 0
     let g = 0
+    let feasts = 0
     for (const o of sim.orbs) {
       if (!o.alive || n >= MAX_ORBS || cull(o.x, o.z, 2)) continue
       const pulse = calm ? 1 : 1 + 0.16 * Math.sin(t * 4 + o.phase)
@@ -432,8 +465,15 @@ export class View {
       // Tilted spin so the top-down camera sees differently lit facets instead of a flat diamond.
       tmpQuat.setFromAxisAngle(UP, (calm ? 0 : t * (o.nova ? 2.2 : 1.1)) + o.phase).multiply(GEM_TILT)
       const bob = o.nova && !calm ? Math.sin(t * 3 + o.phase) * 0.3 : 0
-      tmpMat.compose(tmpPos.set(o.x, -0.2 + bob + (o.nova ? 0.6 : 0), o.z), tmpQuat, tmpScale.set(s, s * 1.25, s))
+      const variant = Math.floor(o.phase * 2) % 3
+      tmpMat.compose(tmpPos.set(o.x, -0.2 + bob + (o.nova ? 0.6 : 0), o.z), tmpQuat, tmpScale.set(s * (variant === 1 ? 0.83 : 1), s * (variant === 2 ? 0.95 : 1.2), s))
       this.orbs.setMatrixAt(n, tmpMat)
+      this.fruitLeaves.setMatrixAt(n, tmpMat)
+      if (o.nova || o.value >= 3 || (o.sourceLength ?? 0) >= 60) {
+        tmpQuat.setFromAxisAngle(UP, calm ? o.phase : t * 0.7 + o.phase).multiply(CANDY_TILT)
+        tmpMat.compose(tmpPos, tmpQuat, tmpScale.setScalar(s))
+        this.feastRings.setMatrixAt(feasts++, tmpMat)
+      }
       if (o.nova) tmpColor.setHex(NOVA_HUES[Math.floor(t * 3 + o.phase) % NOVA_HUES.length]).multiplyScalar(1.1)
       else tmpColor.setHex(o.color).multiplyScalar(0.95)
       this.orbs.setColorAt(n, tmpColor)
@@ -447,6 +487,9 @@ export class View {
     this.orbs.count = n
     this.orbs.instanceMatrix.needsUpdate = true
     if (this.orbs.instanceColor) this.orbs.instanceColor.needsUpdate = true
+    this.fruitLeaves.count = n
+    this.feastRings.count = feasts
+    this.fruitLeaves.instanceMatrix.needsUpdate = this.feastRings.instanceMatrix.needsUpdate = true
 
     n = 0
     for (const s of sim.shards) {
@@ -567,6 +610,8 @@ export class View {
     for (const [id, v] of this.freeCel) {
       if (!seenCel.has(id)) {
         this.scene.remove(v.visual, v.ring, v.label)
+        disposeCelestial(v.visual)
+        v.ring.geometry.dispose()
         ;(v.ring.material as THREE.Material).dispose()
         ;(v.label.material as THREE.Material).dispose()
         this.freeCel.delete(id)
@@ -585,9 +630,11 @@ export class View {
       const len = w.xs.length
       const tier = armorTier(len, w.radius)
       const growth = ARMOR_PROFILES[tier]
+      const material = growthMaterial(len, w.radius)
+      const palette = growthSkinPalette(skin, material)
       const band = Math.max(1, Math.round(skin.band * growth.band))
-      armorColor.setHex(growth.tint).lerp(tmpColor.setHex(skin.head), 0.28)
-      trimColor.setHex(growth.trim).lerp(tmpColor.setHex(skin.colors[0]), 0.25)
+      armorColor.setHex(material.tint).lerp(tmpColor.setHex(skin.head), 0.16)
+      trimColor.setHex(material.trim).lerp(tmpColor.setHex(skin.colors[0]), 0.14)
       const flicker = w.spawnGrace > 0 && !calm && Math.floor(t * 12) % 2 === 0
       const dim = w.spawnGrace > 0 ? (calm ? 0.55 : flicker ? 0.3 : 0.75) : 1
       const bulges = this.bulges.get(w.id)
@@ -635,7 +682,8 @@ export class View {
         const s = w.radius * tailK * wave * bump
         tmpMat.makeScale(s, s * 0.92, s).setPosition(x, 0, z)
         this.body.setMatrixAt(n, tmpMat)
-        tmpColor.setHex(skin.colors[Math.floor(i / band) % skin.colors.length])
+        this.bodyMetal.setX(n, material.metalness)
+        tmpColor.setHex(palette.colors[Math.floor(i / band) % palette.colors.length])
         if (tier > 0 && i % band === 0) tmpColor.lerp(trimColor, 0.5)
         tmpColor.multiplyScalar((w.boosting ? 1.3 : 1) * dim * (bump > 1 ? 1.25 : 1))
         this.body.setColorAt(n, tmpColor)
@@ -650,7 +698,7 @@ export class View {
         n++
       }
       seenHeads.add(w.id)
-      this.updateHead(w, skin, sim.mode === 'team', t, calm, dim, headVisible, sim.crownId === w.id, this.threats?.rivals.get(w.id))
+      this.updateHead(w, skin, sim.mode === 'team', t, calm, dim, headVisible, sim.crownId === w.id, dt, this.threats?.rivals.get(w.id))
       if (w.boosting && !cull(w.xs[len - 1], w.zs[len - 1], 4) && Math.random() < (w.freeBoost > 0 ? 0.95 : 0.6)) {
         const tl = len - 1
         const heading = Math.atan2(w.zs[Math.max(0, tl - 1)] - w.zs[tl], w.xs[Math.max(0, tl - 1)] - w.xs[tl])
@@ -661,6 +709,7 @@ export class View {
     this.visibleWorms = visibleWorms
     this.body.count = n
     this.body.instanceMatrix.needsUpdate = true
+    this.bodyMetal.needsUpdate = true
     if (this.body.instanceColor) this.body.instanceColor.needsUpdate = true
     this.bodyArmor.count = plates
     this.bodyArmor.instanceMatrix.needsUpdate = true
@@ -676,7 +725,7 @@ export class View {
     this.fx.update(dt)
   }
 
-  private updateHead(w: Worm, skin: Skin, team: boolean, t: number, calm: boolean, dim: number, visible: boolean, crowned: boolean, threat?: RivalThreat): void {
+  private updateHead(w: Worm, skin: Skin, team: boolean, t: number, calm: boolean, dim: number, visible: boolean, crowned: boolean, dt: number, threat?: RivalThreat): void {
     let h = this.heads.get(w.id)
     const appearanceKey = `${skin.id}:${w.color}:${w.headStyle}`
     if (!h || h.skin !== appearanceKey) {
@@ -690,21 +739,31 @@ export class View {
     const r = w.radius
     const tier = armorTier(w.xs.length, r)
     const growth = ARMOR_PROFILES[tier]
+    const material = growthMaterial(w.xs.length, r)
+    const palette = growthSkinPalette(skin, material)
     const R = r * 1.18 * growth.scale
     const face = HEAD_FEATURES[w.headStyle]
     h.group.position.set(w.xs[0], 0.05, w.zs[0])
     h.group.rotation.y = -w.angle
-    const chew = calm ? 0 : Math.max(0, 0.2 - w.gulp) * 5
-    const gulp = 1 + chew * 0.16
+    const flash = this.gulpFlashes.get(w.id)
+    const expression = gulpFace(flash ? t - flash.at : Infinity, flash?.strength)
+    const appetite = this.sim ? preyMouthTarget(w, this.sim) : 0
+    h.mouthOpen = easeMouth(h.mouthOpen, Math.max(appetite, expression.open), dt)
+    const gulp = 1 + (calm ? 0 : expression.pulse * 0.1)
     h.head.scale.set(R * gulp, R * 0.94 * gulp, R * gulp)
-    h.headMat.uniforms.uColor.value.setHex(skin.head).multiplyScalar(w.boosting ? 1.25 : 1)
+    h.headMat.uniforms.uColor.value.setHex(palette.head).multiplyScalar(w.boosting ? 1.25 : 1)
     h.headMat.uniforms.uOpacity.value = dim < 1 ? 0.55 + dim * 0.45 : 1
     h.headMat.uniforms.uSolid.value = Math.max(w.headStyle === 'robot' ? 0.7 : 0, growth.solid)
+    h.headMat.uniforms.uMetal.value = material.metalness
+    h.headMat.uniforms.uGlow.value = material.glow
     h.armor.scale.set(R, R * 0.94, R)
     for (let i = 0; i < h.armorLayers.length; i++) h.armorLayers[i].visible = i < tier
-    h.armorMat.color.setHex(growth.tint).lerp(tmpColor.setHex(skin.head), 0.28).multiplyScalar(dim)
-    h.trimMat.color.setHex(growth.trim).lerp(tmpColor.setHex(skin.head), 0.25).multiplyScalar(dim)
-    h.armorMat.metalness = 0.45 + tier * 0.15
+    h.armorMat.color.setHex(material.tint).lerp(tmpColor.setHex(skin.head), 0.16).multiplyScalar(dim)
+    h.trimMat.color.setHex(material.trim).lerp(tmpColor.setHex(skin.head), 0.14).multiplyScalar(dim)
+    h.armorMat.metalness = 0.45 + material.metalness * 0.55
+    h.armorMat.roughness = material.roughness
+    h.trimMat.emissive.setHex(material.trim)
+    h.trimMat.emissiveIntensity = material.metalness * 0.12
     // Eyes: glance toward the turn, blink every few seconds.
     const glance = Math.max(-0.12, Math.min(0.12, Math.atan2(Math.sin(w.targetAngle - w.angle), Math.cos(w.targetAngle - w.angle)) * 0.2))
     if (t > h.blinkAt + 0.14) h.blinkAt = t + 2.2 + Math.random() * 3.5
@@ -718,8 +777,25 @@ export class View {
       h.pupils[k].position.set((face.eye[0] + face.size * 0.62) * R, (face.eye[1] + face.size * 0.34) * R, side * face.eye[2] * R + glance * r)
       h.pupils[k].scale.set(eyeSize * 0.52, eyeSize * 0.52 * blink * eyeHeight, eyeSize * 0.52)
     }
-    h.mouth.position.set(face.mouth[0] * R, face.mouth[1] * R, 0)
-    h.mouth.scale.set(0.075 * R, (0.055 + chew * 0.16) * R, face.width * R)
+    // A forward lip overlays the sculpted snout; growth never scales the eyes or hides the lip.
+    const opening = Math.max(h.mouthOpen, expression.open * 0.8)
+    const lipX = (face.mouth[0] + 0.055 + (gulp - 1) * 0.7) * R
+    const lipY = (face.mouth[1] - opening * 0.035) * R
+    const halfHeight = (0.04 + opening * (w.headStyle === 'manta' ? 0.14 : 0.23)) * R
+    h.mouth.position.set(lipX, lipY, 0)
+    h.mouth.scale.set((0.10 + opening * 0.035) * R, halfHeight, face.width * R * (1 + opening * 0.16))
+    h.mouth.rotation.z = -0.12 - opening * 0.18
+    for (let i = 0; i < h.teeth.length; i++) {
+      const tooth = h.teeth[i], upper = i < 2
+      tooth.visible = opening > 0.12
+      tooth.position.set(lipX + 0.075 * R, lipY + (upper ? 1 : -1) * halfHeight * 0.68, (i % 2 ? 1 : -1) * face.width * R * 0.5)
+      tooth.scale.set(0.045 * R, (0.055 + opening * 0.045) * R, 0.052 * R)
+      tooth.rotation.z = upper ? Math.PI : 0
+    }
+    h.tongue.visible = expression.tongue > 0
+    h.tongue.position.set(lipX + (0.15 + expression.tongue * 0.10) * R, lipY - halfHeight * 0.4, 0)
+    h.tongue.scale.set((0.16 + expression.tongue * 0.13) * R, 0.038 * R, face.width * R * 0.46 * expression.tongue)
+    h.tongue.rotation.z = -0.22
     h.halo.scale.setScalar(r * 1.8)
     const effect = w.traps.freeze > 0 ? 'freeze' : w.traps.slow > 0 ? 'slow' : w.traps.reverse > 0 ? 'reverse' : w.shrinkLeft > 0 ? 'shrink' : null
     h.status.visible = effect !== null
@@ -822,7 +898,14 @@ export class View {
       pupils.push(pupil)
     }
     const mouth = new THREE.Mesh(eyeGeo, new THREE.MeshBasicMaterial({ color: 0x1a0826 }))
+    mouth.name = 'mouth'
     group.add(mouth)
+    const teeth = Array.from({ length: 4 }, () => new THREE.Mesh(new THREE.ConeGeometry(1, 2, 6), white))
+    for (const tooth of teeth) { tooth.visible = false; tooth.name = 'tooth'; group.add(tooth) }
+    const tongue = new THREE.Mesh(eyeGeo, new THREE.MeshStandardMaterial({ color: 0xff599b, roughness: 0.23, emissive: 0x9e174c, emissiveIntensity: 0.3 }))
+    tongue.name = 'tongue'
+    tongue.visible = false
+    group.add(tongue)
     const haloColor = team && w.team >= 0 ? TEAM_COLORS[w.team] : w.isPlayer ? 0xffffff : skin.colors[0]
     const halo = new THREE.Mesh(new THREE.RingGeometry(0.95, 1.18, 40), new THREE.MeshBasicMaterial({ color: new THREE.Color(haloColor).multiplyScalar(team ? 1.1 : 0.9), transparent: true, opacity: team || w.isPlayer ? 0.6 : 0.25, side: THREE.DoubleSide, depthWrite: false }))
     halo.rotation.x = -Math.PI / 2
@@ -852,6 +935,6 @@ export class View {
     const crown = iconSprite('crown', 3)
     crown.visible = false
     group.add(crown)
-    return { group, head, headMat, armor, armorLayers, armorMat, trimMat, eyes, pupils, mouth, halo, status, shield, shieldMat, magnet, boostGlow, label, labelKey: '', crown, skin: `${skin.id}:${w.color}:${w.headStyle}`, blinkAt: Math.random() * 3 }
+    return { group, head, headMat, armor, armorLayers, armorMat, trimMat, eyes, pupils, mouth, teeth, tongue, mouthOpen: 0, halo, status, shield, shieldMat, magnet, boostGlow, label, labelKey: '', crown, skin: `${skin.id}:${w.color}:${w.headStyle}`, blinkAt: Math.random() * 3 }
   }
 }

@@ -10,6 +10,8 @@
 import { assets } from './assets'
 import type { EnvironmentId } from '../game/environmentDefs'
 import { ENVIRONMENT_MUSIC, EnvironmentSynth, MUSIC_FADE_SECONDS } from './environmentMusic'
+import { validHead, type HeadStyle } from '../game/appearance'
+import { HEAD_VOCAL_COOLDOWN, synthHeadVocal, type HeadVocalVoice } from './headVocal'
 
 export type Sfx =
   | 'eat' | 'nova' | 'shard' | 'celestial' | 'power' | 'pickup' | 'shieldUp' | 'shield' | 'boost' | 'death' | 'kill'
@@ -59,6 +61,9 @@ export class Audio {
   private lastPlay = new Map<Sfx, number>()
   private live = new Map<Sfx, number>()
   private loops = new Map<string, { src: AudioBufferSourceNode; gain: GainNode }>()
+  private headVocals = new Set<HeadVocalVoice>()
+  private lastHeadVocal = -Infinity
+  private sfxLevel = 1
   private scene: MusicScene = 'none'
   private current: Voice | null = null
   private retiring = new Set<Voice>()
@@ -99,8 +104,10 @@ export class Audio {
   /** Volumes in 0..1. */
   setVolumes(music: number, sfx: number, muted = false): void {
     const t = this.ctx.currentTime
+    this.sfxLevel = muted ? 0 : Math.max(0, Math.min(1, Number.isFinite(sfx) ? sfx : 0))
     this.music.gain.setTargetAtTime(muted ? 0 : music * 0.55, t, 0.05)
-    this.sfx.gain.setTargetAtTime(muted ? 0 : sfx * 0.9, t, 0.05)
+    this.sfx.gain.setTargetAtTime(this.sfxLevel * 0.9, t, 0.05)
+    if (this.sfxLevel === 0) for (const voice of this.headVocals) voice.dispose()
   }
 
   private buffer(id: string): AudioBuffer | null {
@@ -165,6 +172,16 @@ export class Audio {
       src.disconnect(); g.disconnect()
     }
     src.start()
+  }
+
+  /** Player's large swallows only. A global gap prevents skin changes bypassing the limit. */
+  playHeadVocal(style: HeadStyle, strength = 1): void {
+    if (!this.unlocked || this.disposed || this.ctx.state !== 'running' || this.sfxLevel <= 0 || strength <= 0) return
+    const now = this.ctx.currentTime
+    if (now - this.lastHeadVocal < HEAD_VOCAL_COOLDOWN || this.headVocals.size > 0) return
+    this.lastHeadVocal = now
+    const voice = synthHeadVocal(this.ctx, this.sfx, validHead(style), strength, () => this.headVocals.delete(voice))
+    this.headVocals.add(voice)
   }
 
   private setLoop(key: string, id: string, level: number, rate = 1): void {
@@ -330,6 +347,8 @@ export class Audio {
     this.disposed = true
     window.clearInterval(this.musicTimer)
     this.synth.dispose()
+    for (const voice of this.headVocals) voice.dispose()
+    this.headVocals.clear()
     for (const voice of [this.current, ...this.retiring]) if (voice) {
       try { voice.src.stop() } catch { /* already stopped */ }
       voice.src.disconnect(); voice.gain.disconnect()

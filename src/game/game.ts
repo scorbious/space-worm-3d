@@ -19,6 +19,7 @@ import { SPECIAL_COLORS, type SurpriseId, type TimedTrapId } from './specials'
 import type { EnvironmentId } from './environmentDefs'
 import { Sim, type DeathCause, type PlayerControl, type Worm } from './sim'
 import { View } from './view'
+import { gulpFeedback } from './faceFeedback'
 
 export type GameMode = 'title' | 'playing' | 'paused' | 'dead' | 'ended'
 
@@ -322,6 +323,11 @@ export class Game {
     const P = sim.player
     const fx = this.view.fx
     for (const e of sim.events) {
+      const gulp = gulpFeedback(e)
+      if (gulp) {
+        this.view.flashGulp(gulp.worm.id, gulp.strength)
+        if (gulp.big && gulp.worm === P && this.mode === 'playing') this.audio.playHeadVocal(P.headStyle, gulp.strength)
+      }
       switch (e.type) {
         case 'eat':
           if (e.nova) {

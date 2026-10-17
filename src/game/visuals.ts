@@ -4,7 +4,7 @@
  * file arrives, so nothing waits on the network. Shaders stay small and bloom-friendly.
  */
 import * as THREE from 'three'
-import { mergeVertices } from 'three/examples/jsm/utils/BufferGeometryUtils.js'
+import { mergeGeometries, mergeVertices } from 'three/examples/jsm/utils/BufferGeometryUtils.js'
 import { assets } from '../engine/assets'
 import type { CelestialId, PickupId } from './content'
 import { PICKUP_COLORS } from './content'
@@ -158,17 +158,20 @@ const LIGHT_DIR = 'normalize(vec3(0.35, 0.9, 0.25))'
 export function jellyMaterial(instanced: boolean, glow = 0.35, tinted = false): THREE.ShaderMaterial {
   return new THREE.ShaderMaterial({
     defines: { ...(instanced ? { JELLY_INSTANCED: '' } : {}), ...(tinted ? { HEAD_TINT: '' } : {}) },
-    uniforms: { uColor: { value: new THREE.Color(1, 1, 1) }, uGlow: { value: glow }, uOpacity: { value: 1 }, uSolid: { value: 0 }, uFaceted: { value: 0 } },
-    vertexShader: `varying vec3 vN; varying vec3 vW; varying vec3 vC; uniform vec3 uColor;
+    uniforms: { uColor: { value: new THREE.Color(1, 1, 1) }, uGlow: { value: glow }, uOpacity: { value: 1 }, uSolid: { value: 0 }, uFaceted: { value: 0 }, uMetal: { value: 0 } },
+    vertexShader: `varying vec3 vN; varying vec3 vW; varying vec3 vC; varying float vMetal; uniform vec3 uColor; uniform float uMetal;
+      #ifdef JELLY_INSTANCED
+        attribute float aMetal;
+      #endif
       #ifdef HEAD_TINT
         attribute vec3 color;
       #endif
       void main(){
         mat4 m = modelMatrix;
         #ifdef JELLY_INSTANCED
-          m = modelMatrix * instanceMatrix; vC = instanceColor;
+          m = modelMatrix * instanceMatrix; vC = instanceColor; vMetal = aMetal;
         #else
-          vC = uColor;
+          vC = uColor; vMetal = uMetal;
         #endif
         #ifdef HEAD_TINT
           vC *= color;
@@ -176,7 +179,7 @@ export function jellyMaterial(instanced: boolean, glow = 0.35, tinted = false): 
         vec4 w = m * vec4(position, 1.0); vW = w.xyz;
         vN = normalize(mat3(m) * normal);
         gl_Position = projectionMatrix * viewMatrix * w; }`,
-    fragmentShader: `uniform float uGlow; uniform float uOpacity; uniform float uSolid; uniform float uFaceted; varying vec3 vN; varying vec3 vW; varying vec3 vC;
+    fragmentShader: `uniform float uGlow; uniform float uOpacity; uniform float uSolid; uniform float uFaceted; varying vec3 vN; varying vec3 vW; varying vec3 vC; varying float vMetal;
       void main(){
         vec3 N = normalize(mix(normalize(vN), normalize(cross(dFdx(vW), dFdy(vW))), uFaceted));
         vec3 V = normalize(cameraPosition - vW); vec3 L = ${LIGHT_DIR};
@@ -194,6 +197,10 @@ export function jellyMaterial(instanced: boolean, glow = 0.35, tinted = false): 
         vec3 col = alb * (0.16 + 0.8 * wrap) * contact + alb * inner * 0.25 + alb * rim * (0.38 + uGlow * 0.65) + vec3(spec * 0.5);
         vec3 solid = alb * (0.2 + 0.85 * max(dot(N,L),0.0)) * contact + vec3(spec * 0.65) + alb * fres * 0.16;
         col = mix(col, solid, uSolid);
+        // Metallic coat is local to each worm: bronze, gold and amethyst share one draw call.
+        vec3 reflection = mix(vec3(0.16,0.13,0.27), vec3(0.9,0.94,1.0), smoothstep(-0.15,0.95,N.y));
+        vec3 coat = alb * (0.25 + wrap * 0.65) * contact + reflection * alb * fres * 0.9 + mix(alb,vec3(1.0),0.45) * spec * 1.2;
+        col = mix(col, coat, vMetal) + alb * rim * vMetal * 0.18;
         gl_FragColor = vec4(col, uOpacity);
         #include <colorspace_fragment>
       }`,
@@ -221,6 +228,29 @@ export function crystalMaterial(): THREE.ShaderMaterial {
         #include <colorspace_fragment>
       }`,
   })
+}
+
+/** A little faceted berry with a pinched crown; shared by every instanced edible mote. */
+export function crystalFruitGeometry(): THREE.BufferGeometry {
+  const geometry = new THREE.IcosahedronGeometry(1, 1)
+  const p = geometry.getAttribute('position')
+  for (let i = 0; i < p.count; i++) {
+    const y = p.getY(i)
+    const pinch = 1 - Math.max(0, y) * 0.18
+    p.setXYZ(i, p.getX(i) * pinch, y * 1.08, p.getZ(i) * pinch)
+  }
+  geometry.computeVertexNormals()
+  return geometry
+}
+
+/** Leaves/stem are merged into one cheap instanced garnish, never collision geometry. */
+export function fruitLeafGeometry(): THREE.BufferGeometry {
+  const parts: THREE.BufferGeometry[] = [new THREE.CylinderGeometry(0.07, 0.06, 0.35, 5).translate(0, 1.08, 0)]
+  for (const side of [-1, 1]) parts.push(new THREE.OctahedronGeometry(1).scale(0.36, 0.055, 0.17).rotateZ(side * 0.45).translate(side * 0.23, 1.1, 0))
+  const flat = parts.map(part => part.index ? part.toNonIndexed() : part)
+  const geometry = mergeGeometries(flat)!
+  for (const part of new Set([...parts, ...flat])) part.dispose()
+  return geometry
 }
 
 /** Camera-facing additive halo quads (instanced), used under motes, shards and pickups. */
@@ -292,11 +322,12 @@ export function shockwaveMaterial(color: number): THREE.ShaderMaterial {
 
 // ─── Celestial bodies ──────────────────────────────────────────────────────
 export type CelestialVisual = THREE.Group & {
-  userData: { kind: CelestialId; spinner: THREE.Object3D; tail?: THREE.Object3D; beams?: THREE.Object3D; corona?: THREE.Sprite; surface?: THREE.ShaderMaterial }
+  userData: { kind: CelestialId; spinner: THREE.Object3D; candy?: THREE.Object3D; tail?: THREE.Object3D; beams?: THREE.Object3D; corona?: THREE.Sprite; surface?: THREE.ShaderMaterial }
 }
 
 const sphereGeo = new THREE.SphereGeometry(1, 48, 32)
 const lowSphereGeo = new THREE.SphereGeometry(1, 24, 16)
+sphereGeo.userData.shared = lowSphereGeo.userData.shared = true
 const shared = <T extends THREE.Material>(m: T): T => {
   m.userData.shared = true
   return m
@@ -304,7 +335,7 @@ const shared = <T extends THREE.Material>(m: T): T => {
 
 /** Emissive surface that slowly churns its texture (stars, pulsars). */
 function burningSurface(tex: string, tint: number, intensity: number, fallback: string): THREE.ShaderMaterial {
-  return shared(new THREE.ShaderMaterial({
+  return mat(tex, () => new THREE.ShaderMaterial({
     uniforms: { uMap: { value: assetTexture(tex, { fallback }) }, uTime: { value: 0 }, uTint: { value: new THREE.Color(tint) }, uI: { value: intensity } },
     vertexShader: `varying vec2 vUv; varying vec3 vN; varying vec3 vV;
       void main(){ vUv = uv; vec4 mv = modelViewMatrix * vec4(position,1.0); vN = normalize(normalMatrix*normal); vV = normalize(-mv.xyz); gl_Position = projectionMatrix*mv; }`,
@@ -376,6 +407,53 @@ function beamMaterial(): THREE.ShaderMaterial {
   }))
 }
 
+const candyGeometries = new Map<string, THREE.BufferGeometry>()
+function candyGeometry(key: string, build: () => THREE.BufferGeometry): THREE.BufferGeometry {
+  let geometry = candyGeometries.get(key)
+  if (!geometry) { geometry = build(); geometry.userData.shared = true; candyGeometries.set(key, geometry) }
+  return geometry
+}
+/** Sugar facets are merged: one draw call, not a mesh per sprinkle. */
+function sugarGeometry(kind: CelestialId): THREE.BufferGeometry {
+  return candyGeometry(`sugar-${kind}`, () => {
+    const parts: THREE.BufferGeometry[] = []
+    for (let i = 0; i < 7; i++) {
+      const a = i * 2.4, y = -0.5 + i / 6, r = Math.sqrt(1 - y * y)
+      const size = kind === 'comet' ? 0.16 : 0.085
+      parts.push(new THREE.IcosahedronGeometry(size, 0).scale(1, kind === 'comet' ? 2 : 1, 1).translate(Math.cos(a) * r, y, Math.sin(a) * r))
+    }
+    const geometry = mergeGeometries(parts)!
+    for (const part of parts) part.dispose()
+    return geometry
+  })
+}
+
+function candyDetails(kind: CelestialId): THREE.Group {
+  const details = new THREE.Group()
+  const colors = { moon: 0xffa6db, comet: 0xc2ffef, planet: 0xffc4ed, star: 0xffed9c, pulsar: 0xf0ccff }
+  const sugar = mat(`sugar-${kind}`, () => new THREE.MeshStandardMaterial({ color: colors[kind], roughness: 0.18, metalness: 0.24, emissive: colors[kind], emissiveIntensity: 0.25 }))
+  details.add(new THREE.Mesh(sugarGeometry(kind), sugar))
+  if (kind === 'moon' || kind === 'comet') {
+    const leaves = new THREE.Mesh(candyGeometry('celestial-leaf', fruitLeafGeometry), mat('candy-leaf', () => new THREE.MeshStandardMaterial({ color: 0x67f8bb, roughness: 0.28, emissive: 0x216449, emissiveIntensity: 0.35 })))
+    leaves.rotation.z = -0.3
+    details.add(leaves)
+  } else {
+    const frosting = candyGeometry(`icing-${kind}`, () => {
+      const parts: THREE.BufferGeometry[] = []
+      for (const y of [-0.42, 0.18, 0.6]) {
+        const r = Math.sqrt(1 - y * y) * 1.015
+        parts.push(new THREE.TorusGeometry(r, 0.038, 5, 40).rotateX(Math.PI / 2).translate(0, y, 0))
+      }
+      const geometry = mergeGeometries(parts)!
+      for (const part of parts) part.dispose()
+      return geometry
+    })
+    details.add(new THREE.Mesh(frosting, sugar))
+    details.rotation.z = kind === 'planet' ? 0.16 : 0.45
+  }
+  return details
+}
+
 function buildCelestial(kind: CelestialId): CelestialVisual {
   const g = new THREE.Group() as CelestialVisual
   const spinner = new THREE.Group()
@@ -383,17 +461,17 @@ function buildCelestial(kind: CelestialId): CelestialVisual {
   g.userData = { kind, spinner }
   const glowSprite = (color: number, size: number, opacity: number) => {
     const s = new THREE.Sprite(new THREE.SpriteMaterial({ map: glowTexture(), color, transparent: true, opacity, blending: THREE.AdditiveBlending, depthWrite: false }))
-  s.userData.base = opacity
+    s.userData.base = opacity
     s.scale.setScalar(size)
     return s
   }
   switch (kind) {
     case 'moon': {
       const m = mat('moon', () => new THREE.MeshStandardMaterial({
-        map: assetTexture('tex/moon', { fallback: '#a8a4b8' }), roughness: 0.95, metalness: 0,
-        emissive: 0x3a3650, emissiveMap: assetTexture('tex/moon', { fallback: '#a8a4b8' }), emissiveIntensity: 0.3,
+        map: assetTexture('tex/moon', { fallback: '#ead2e8' }), color: 0xffd6ed, roughness: 0.2, metalness: 0.18,
+        emissive: 0xb3669c, emissiveMap: assetTexture('tex/moon', { fallback: '#ead2e8' }), emissiveIntensity: 0.32,
       }))
-      spinner.add(new THREE.Mesh(sphereGeo, m))
+      spinner.add(new THREE.Mesh(candyGeometry('moon-core', () => new THREE.IcosahedronGeometry(1, 2)), m))
       const atmo = new THREE.Mesh(lowSphereGeo, mat('moon-atmo', () => fresnelMaterial(0xcfd8ff, 3.2, 0.6)))
       atmo.scale.setScalar(1.08)
       g.add(atmo)
@@ -401,10 +479,10 @@ function buildCelestial(kind: CelestialId): CelestialVisual {
     }
     case 'comet': {
       const m = mat('comet', () => new THREE.MeshStandardMaterial({
-        map: assetTexture('tex/comet', { fallback: '#8fd8ee' }), roughness: 0.55, metalness: 0.05,
+        map: assetTexture('tex/comet', { fallback: '#8fd8ee' }), color: 0xaaffef, roughness: 0.15, metalness: 0.3,
         emissive: 0x2fa8d8, emissiveMap: assetTexture('tex/comet', { fallback: '#8fd8ee' }), emissiveIntensity: 0.38,
       }))
-      const core = new THREE.Mesh(sphereGeo, m)
+      const core = new THREE.Mesh(candyGeometry('comet-core', () => new THREE.IcosahedronGeometry(1, 1)), m)
       core.scale.set(1, 0.86, 0.92)
       spinner.add(core)
       g.add(glowSprite(0x8fe8ff, 3.6, 0.28))
@@ -419,8 +497,8 @@ function buildCelestial(kind: CelestialId): CelestialVisual {
     }
     case 'planet': {
       const m = mat('planet', () => new THREE.MeshStandardMaterial({
-        map: assetTexture('tex/gasgiant', { fallback: '#e0a070' }), roughness: 0.8, metalness: 0,
-        emissive: 0x6a3818, emissiveMap: assetTexture('tex/gasgiant', { fallback: '#e0a070' }), emissiveIntensity: 0.26,
+        map: assetTexture('tex/gasgiant', { fallback: '#ffc292' }), color: 0xffd5a6, roughness: 0.16, metalness: 0.18,
+        emissive: 0xc46c65, emissiveMap: assetTexture('tex/gasgiant', { fallback: '#ffc292' }), emissiveIntensity: 0.3,
       }))
       spinner.add(new THREE.Mesh(sphereGeo, m))
       const ring = new THREE.Mesh(radialRing(1.35, 2.25), planetRingMaterial())
@@ -465,6 +543,11 @@ function buildCelestial(kind: CelestialId): CelestialVisual {
       break
     }
   }
+  const candy = candyDetails(kind)
+  spinner.add(candy)
+  g.userData.candy = candy
+  // All five collectible silhouettes share a sweet glint, distinct from dull dangerous rocks.
+  if (kind === 'moon' || kind === 'planet') g.add(glowSprite(kind === 'moon' ? 0xffa9df : 0xffc388, 3.0, 0.17))
   return g
 }
 
@@ -475,12 +558,28 @@ export function makeCelestial(kind: CelestialId): CelestialVisual {
 export function animateCelestial(v: CelestialVisual, t: number, spin: number, heading: number, calm: boolean): void {
   const u = v.userData
   u.spinner.rotation.y = spin
+  u.spinner.position.y = calm ? 0 : Math.sin(t * 2.1 + spin) * 0.07
+  u.spinner.rotation.z = calm ? 0 : Math.sin(t * 1.4 + spin) * 0.06
+  if (u.candy) u.candy.scale.setScalar(calm ? 1 : 1 + Math.sin(t * 2.7 + spin) * 0.018)
   if (u.tail) u.tail.rotation.y = -heading
   if (u.beams) u.beams.rotation.y = calm ? 0 : t * 3.2
-  if (u.corona && !calm) u.corona.material.opacity = (u.corona.userData.base ?? 0.3) * (0.85 + 0.15 * Math.sin(t * 3 + spin))
+  if (u.corona) u.corona.material.opacity = (u.corona.userData.base ?? 0.3) * (calm ? 1 : 0.85 + 0.15 * Math.sin(t * 3 + spin))
   if (u.surface) u.surface.uniforms.uTime.value = calm ? 0 : t
   const tail = MATS['comet-tail'] as THREE.ShaderMaterial | undefined
   if (tail) tail.uniforms.uTime.value = calm ? 0 : t
+}
+
+/** Free food owns its sprites/rings, but cached sugar/core geometry and surfaces are shared. */
+export function disposeCelestial(visual: CelestialVisual): void {
+  const geometries = new Set<THREE.BufferGeometry>(), materials = new Set<THREE.Material>()
+  visual.traverse(object => {
+    if (object instanceof THREE.Mesh && object.geometry.userData.shared !== true) geometries.add(object.geometry)
+    if (object instanceof THREE.Mesh || object instanceof THREE.Sprite) {
+      for (const material of Array.isArray(object.material) ? object.material : [object.material]) if (material.userData.shared !== true) materials.add(material)
+    }
+  })
+  for (const geometry of geometries) geometry.dispose()
+  for (const material of materials) material.dispose()
 }
 
 // ─── Hazards ───────────────────────────────────────────────────────────────

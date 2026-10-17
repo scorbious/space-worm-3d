@@ -99,7 +99,7 @@ export type Worm = {
 /** Combo milestones and the bonus stardust each one pays (player only). */
 export const COMBO_MILESTONES: readonly (readonly [number, number])[] = [[10, 1], [25, 2], [50, 4], [100, 8], [200, 12]]
 
-export type Orb = { x: number; z: number; value: number; r: number; color: number; alive: boolean; phase: number; nova: boolean }
+export type Orb = { x: number; z: number; value: number; r: number; color: number; alive: boolean; phase: number; nova: boolean; sourceLength?: number }
 export type Shard = { x: number; z: number; alive: boolean; phase: number }
 export type Pickup = { id: number; kind: PickupId; x: number; z: number; alive: boolean; phase: number }
 export type Celestial = { id: number; kind: CelestialId; x: number; z: number; vx: number; vz: number; spin: number; alive: boolean; bump: number }
@@ -112,7 +112,7 @@ export type Trap = { id: number; kind: TrapId; x: number; z: number; alive: bool
 export type DeathCause = 'worm' | 'self' | 'rim' | 'asteroid' | 'gate' | 'head'
 
 export type SimEvent =
-  | { type: 'eat'; worm: Worm; value: number; x: number; z: number; color: number; nova: boolean; combo: number }
+  | { type: 'eat'; worm: Worm; value: number; x: number; z: number; color: number; nova: boolean; combo: number; sourceLength?: number }
   | { type: 'combo'; worm: Worm; combo: number; bonus: number }
   | { type: 'crown'; worm: Worm | null }
   | { type: 'crownTaken'; killer: Worm; victim: Worm; bounty: number }
@@ -394,7 +394,7 @@ export class Sim {
     this.events.push({ type: 'spawn', worm: w })
   }
 
-  private spawnOrb(x?: number, z?: number, value?: number, color?: number): void {
+  private spawnOrb(x?: number, z?: number, value?: number, color?: number, sourceLength?: number): void {
     let px = x
     let pz = z
     if (px === undefined || pz === undefined) {
@@ -411,6 +411,7 @@ export class Sim {
     const orb: Orb = {
       x: px!, z: pz!, value: v, r: nova ? 1.15 : 0.3 + Math.min(1.1, Math.sqrt(v) * 0.24),
       color: nova ? 0xffffff : color ?? ORB_COLORS[Math.floor(this.random() * ORB_COLORS.length)], alive: true, phase: this.random() * 6.28, nova,
+      sourceLength,
     }
     const slot = this.orbs.findIndex(o => !o.alive)
     if (slot >= 0 && this.orbs.length > 1400) this.orbs[slot] = orb
@@ -834,7 +835,7 @@ export class Sim {
       for (let i = 0; i < count; i++) {
         const s = Math.min(lost - 1, Math.floor((i / count) * lost))
         const j = v.radius * 0.6
-        this.spawnOrb(xs[s] + (this.random() - 0.5) * j, zs[s] + (this.random() - 0.5) * j, each, skin.colors[i % skin.colors.length])
+        this.spawnOrb(xs[s] + (this.random() - 0.5) * j, zs[s] + (this.random() - 0.5) * j, each, skin.colors[i % skin.colors.length], len)
       }
     }
     for (let i = 0; i < lost; i++) {
@@ -886,7 +887,7 @@ export class Sim {
     for (let i = 0; i < count; i++) {
       const s = Math.min(len - 1, Math.floor((i / count) * len))
       const j = w.radius * 1.2
-      this.spawnOrb(w.xs[s] + (this.random() - 0.5) * j, w.zs[s] + (this.random() - 0.5) * j, each, skin.colors[i % skin.colors.length])
+      this.spawnOrb(w.xs[s] + (this.random() - 0.5) * j, w.zs[s] + (this.random() - 0.5) * j, each, skin.colors[i % skin.colors.length], len)
     }
     for (let i = 0; i < len; i++) {
       const k = w.kinds[i]
@@ -922,7 +923,7 @@ export class Sim {
           w.combo += 1
           w.comboTimer = CONFIG.feast.comboWindow
           if (w.combo > w.bestCombo) w.bestCombo = w.combo
-          this.events.push({ type: 'eat', worm: w, value: o.value, x: o.x, z: o.z, color: o.color, nova: o.nova, combo: w.combo })
+          this.events.push({ type: 'eat', worm: w, value: o.value, x: o.x, z: o.z, color: o.color, nova: o.nova, combo: w.combo, sourceLength: o.sourceLength })
           if (w.isPlayer) {
             const m = COMBO_MILESTONES.find(([at]) => at === w.combo)
             if (m) {
