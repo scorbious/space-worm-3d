@@ -124,7 +124,7 @@ export class Ui {
         </div>
       </section>
 
-      <section class="screen title" data-screen="title">
+      <section class="screen title title-screen" data-screen="title">
         <div class="title-wrap">
           ${logo('big')}
           <p class="tagline">${T('title.tagline')}</p>
@@ -272,8 +272,8 @@ export class Ui {
         <div class="panel card wide scroll" data-bind="howto"></div>
       </section>
 
-      <section class="screen menu" data-screen="settings">
-        <div class="panel card">
+      <section class="screen menu settings-screen" data-screen="settings">
+        <div class="panel card settings-card">
           <h2 data-i18n="settings.title"></h2>
           <div class="form">
             <label class="row"><span data-i18n="settings.language"></span><select data-setting="locale">${LOCALES.map(l => `<option value="${l}" data-i18n="lang.${l}"></option>`).join('')}</select></label>
