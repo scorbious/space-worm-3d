@@ -26,4 +26,10 @@ describe('responsive game shell', () => {
     expect(ui).toContain('class="screen title title-screen"')
     expect(ui).toContain('class="panel card settings-card"')
   })
+
+  it('keeps the complete desktop title view visible without a title scrollbar', () => {
+    expect(css).toContain('.screen.title { overflow: hidden; align-items: flex-start; }')
+    expect(css).toContain('.screen.title .title-wrap { width: min(1080px, 112%); gap: 7px; zoom: .88; }')
+    expect(css).toContain('@media (min-width: 769px) and (max-height: 720px)')
+  })
 })

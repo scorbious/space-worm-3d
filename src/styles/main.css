@@ -737,3 +737,28 @@ body.reduced-motion .tarrow.urgent .chev::before { animation: none; box-shadow: 
   .mode-card small { font-size: 12.5px; }
   .settings-card .row { min-height: clamp(40px, 4.5vh, 52px); padding-block: 6px; }
 }
+
+/* The title screen contains the campaign and competitive controls as well as the
+   four utility links. Keep that complete first view visible on desktop instead of
+   making the player scroll just to reach Settings. */
+@media (min-width: 769px) {
+  .screen.title { overflow: hidden; align-items: flex-start; }
+  .screen.title .title-wrap { width: min(1080px, 112%); gap: 7px; zoom: .88; }
+  .screen.title .logo.big { font-size: clamp(38px, 5.4vw, 60px); }
+  .screen.title .title-row { gap: 8px; }
+  .screen.title .name-field, .screen.title .wallet { padding-block: 6px; }
+  .screen.title .campaign-launch { padding-block: 9px; }
+  .screen.title .competitive-panel { padding: 11px 13px; }
+  .screen.title .competitive-heading { margin-bottom: 7px; }
+  .screen.title .competitive-cta { margin-top: 8px; }
+  .screen.title .multiplayer-cta { min-height: 38px; }
+  .screen.title .title-links .btn { min-height: 36px; padding-block: 6px; }
+}
+
+@media (min-width: 769px) and (max-height: 720px) {
+  .screen.title .title-wrap { zoom: .78; }
+}
+
+@media (min-width: 769px) and (max-height: 600px) {
+  .screen.title .title-wrap { zoom: .68; }
+}
