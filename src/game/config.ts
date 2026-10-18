@@ -33,6 +33,14 @@ export const DEFAULT_CONFIG = {
     seconds: 240,
     respawn: 4,
   },
+  competitive: {
+    shortSeconds: 180,
+    longSeconds: 300,
+    maps: {
+      sprint: { radius: 96, bots: 5, food: 420, stardust: 24, pickups: 6, celestials: 10, asteroids: 12, gates: 4, wells: 3 },
+      exploration: { radius: 176, bots: 9, food: 820, stardust: 34, pickups: 9, celestials: 20, asteroids: 18, gates: 6, wells: 5 },
+    },
+  },
   pickups: {
     magnet: 10,
     shield: 25,

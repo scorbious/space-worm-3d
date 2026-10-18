@@ -15,7 +15,7 @@ import {
 } from './content'
 import {
   addPower, canBite, canConsume, emptyStacks, gateState, lengthFromMass, powerEffects, radiusForLength,
-  selfSafeSegments, spacingForRadius, turnRateFor, wellSpeedFactor, type Mode, type PowerStacks,
+  selfSafeSegments, spacingForRadius, turnRateFor, wellSpeedFactor, normalizeCompetitiveRound, type CompetitiveRound, type Mode, type PowerStacks,
 } from './rules'
 
 // ─── Random ────────────────────────────────────────────────────────────────
@@ -82,7 +82,10 @@ export type Worm = {
   kills: number
   celestials: number
   shards: number
+  /** Competitive round stars collected from star pickups; separate from spendable stardust. */
+  stars: number
   born: number
+  survival: number
   /** Bites landed this life, and the worm we may pass through right after a bite. */
   bites: number
   biteImmuneId: number
@@ -111,6 +114,8 @@ export type Trap = { id: number; kind: TrapId; x: number; z: number; alive: bool
 
 export type DeathCause = 'worm' | 'self' | 'rim' | 'asteroid' | 'gate' | 'head'
 
+export type RoundStanding = { name: string; length: number; kills: number; stars: number; survival: number; team: number; isPlayer: boolean }
+
 export type SimEvent =
   | { type: 'eat'; worm: Worm; value: number; x: number; z: number; color: number; nova: boolean; combo: number; sourceLength?: number }
   | { type: 'combo'; worm: Worm; combo: number; bonus: number }
@@ -126,7 +131,7 @@ export type SimEvent =
   | { type: 'bite'; biter: Worm; victim: Worm; lost: number; x: number; z: number; xs: number[]; zs: number[] }
   | { type: 'spawn'; worm: Worm }
   | { type: 'stage'; stage: number; radius: number }
-  | { type: 'matchEnd'; scores: [number, number] }
+  | { type: 'matchEnd'; scores: [number, number]; standings?: RoundStanding[]; winner?: 0 | 1 | -1 }
   | { type: 'surpriseSpawn'; surprise: Surprise }
   | { type: 'surpriseExpire'; surprise: Surprise }
   | { type: 'surprise'; worm: Worm; kind: SurpriseId; duration: number; x: number; z: number }
@@ -188,11 +193,13 @@ function segDistance(px: number, pz: number, ax: number, az: number, bx: number,
 
 const wrapAngle = (a: number) => Math.atan2(Math.sin(a), Math.cos(a))
 
-export type SimOptions = { mode: Mode; seed?: number; playerName: string; playerSkin: string; playerColor?: WormColor; headStyle?: HeadStyle; bots?: number; networkOnly?: boolean }
+export type SimOptions = { mode: Mode; seed?: number; playerName: string; playerSkin: string; playerColor?: WormColor; headStyle?: HeadStyle; bots?: number; networkOnly?: boolean; round?: CompetitiveRound }
 
 export class Sim {
   readonly mode: Mode
   readonly environmentOffset: number
+  readonly round: CompetitiveRound | undefined
+  private readonly roundTuning: typeof CONFIG.competitive.maps.sprint | null
   /** Active round seconds; passed unscaled by Game so hit-stop never delays a 180s rotation. */
   environmentTime = 0
   private environmentCompensation = 0
@@ -231,6 +238,10 @@ export class Sim {
 
   constructor(opts: SimOptions) {
     this.mode = opts.mode
+    this.round = normalizeCompetitiveRound(opts.round)
+    this.roundTuning = this.round ? CONFIG.competitive.maps[this.round.map] : null
+    this.radius = this.roundTuning?.radius ?? CONFIG.arena.radius
+    this.baseRadius = this.radius
     this.environmentOffset = Math.abs(opts.seed ?? Math.floor(Math.random() * 10000)) % 6
     this.random = rng(opts.seed ?? (Math.random() * 2 ** 31) | 0)
     if (!opts.networkOnly) this.buildHazards()
@@ -238,19 +249,22 @@ export class Sim {
     this.player.color = validColor(opts.playerColor)
     this.player.headStyle = validHead(opts.headStyle)
     if (opts.networkOnly) return // NetworkSim only hydrates server state; no bots, hazards or local food.
+    if (this.round) this.matchLeft = this.round.duration
     if (opts.mode === 'team') {
-      this.matchLeft = CONFIG.team.seconds
-      for (let i = 0; i < 5; i++) this.createWorm(this.botName(), false, 0, this.randomSkin())
-      for (let i = 0; i < 6; i++) this.createWorm(this.botName(), false, 1, this.randomSkin())
+      const teamSize = this.round?.teamSize ?? 6
+      for (let i = 0; i < teamSize - 1; i++) this.createWorm(this.botName(), false, 0, this.randomSkin())
+      for (let i = 0; i < teamSize; i++) this.createWorm(this.botName(), false, 1, this.randomSkin())
+      if (!this.round) this.matchLeft = CONFIG.team.seconds
     } else {
-      const bots = opts.bots ?? CONFIG.arena.bots
+      const bots = opts.bots ?? this.roundTuning?.bots ?? CONFIG.arena.bots
       for (let i = 0; i < bots; i++) this.createWorm(this.botName(), false, -1, this.randomSkin())
     }
+    const tuning = this.roundTuning
     for (const w of this.worms) this.spawnWorm(w)
-    for (let i = 0; i < CONFIG.arena.food; i++) this.spawnOrb()
-    for (let i = 0; i < CONFIG.arena.stardust; i++) this.spawnShard()
-    for (let i = 0; i < CONFIG.arena.pickups; i++) this.spawnPickup()
-    for (let i = 0; i < CONFIG.arena.celestials; i++) this.spawnCelestial()
+    for (let i = 0; i < (tuning?.food ?? CONFIG.arena.food); i++) this.spawnOrb()
+    for (let i = 0; i < (tuning?.stardust ?? CONFIG.arena.stardust); i++) this.spawnShard()
+    for (let i = 0; i < (tuning?.pickups ?? CONFIG.arena.pickups); i++) this.spawnPickup()
+    for (let i = 0; i < (tuning?.celestials ?? CONFIG.arena.celestials); i++) this.spawnCelestial()
     for (const kind of TRAP_IDS) this.spawnTrap(kind)
   }
 
@@ -283,12 +297,12 @@ export class Sim {
       !this.asteroids.some(a => Math.hypot(a.x - x, a.z - z) < a.r + m) &&
       !this.wells.some(w => Math.hypot(w.x - x, w.z - z) < w.r + m) &&
       !this.gates.some(g => segDistance(x, z, g.ax, g.az, g.bx, g.bz) < m)
-    for (let tries = 0; this.wells.length < CONFIG.arena.wells && tries < 400; tries++) {
+    for (let tries = 0; this.wells.length < (this.roundTuning?.wells ?? CONFIG.arena.wells) && tries < 400; tries++) {
       const p = this.randomPoint(0.78, 0.3)
       const r = 14 + this.random() * 5
       if (clearOf(p.x, p.z, r + 12)) this.wells.push({ x: p.x, z: p.z, r })
     }
-    for (let tries = 0; this.gates.length < CONFIG.arena.gates && tries < 400; tries++) {
+    for (let tries = 0; this.gates.length < (this.roundTuning?.gates ?? CONFIG.arena.gates) && tries < 400; tries++) {
       const p = this.randomPoint(0.86, 0.22)
       const half = 7 + this.random() * 5
       // Orient gates roughly tangentially so they cut across common paths.
@@ -300,7 +314,7 @@ export class Sim {
       }
       if (clearOf(g.ax, g.az, 10) && clearOf(g.bx, g.bz, 10) && clearOf(p.x, p.z, 10)) this.gates.push(g)
     }
-    for (let tries = 0; this.asteroids.length < CONFIG.arena.asteroids && tries < 800; tries++) {
+    for (let tries = 0; this.asteroids.length < (this.roundTuning?.asteroids ?? CONFIG.arena.asteroids) && tries < 800; tries++) {
       const p = this.randomPoint(0.92, 0.14)
       const r = 2.4 + this.random() * 3.4
       if (clearOf(p.x, p.z, r + 7) && Math.hypot(p.x, p.z) < R - r - 6) this.asteroids.push({ x: p.x, z: p.z, r, seed: this.random() * 1000 })
@@ -313,7 +327,7 @@ export class Sim {
       color: 'skin', headStyle: 'round', shrinkLeft: 0, traps: { freeze: 0, slow: 0, reverse: 0 }, trapGrace: 0,
       angle: 0, targetAngle: 0, turnAxis: 0, mass: CONFIG.worm.startLength, radius: radiusForLength(CONFIG.worm.startLength),
       boosting: false, wantBoost: false, dropTimer: 0, stacks: emptyStacks(), magnet: 0, shield: 0, freeBoost: 0,
-      envGrace: 0, spawnGrace: 0, speed: 0, slowed: false, peak: 0, kills: 0, celestials: 0, shards: 0, born: 0, bites: 0, biteImmuneId: -1, biteImmuneUntil: 0,
+      envGrace: 0, spawnGrace: 0, speed: 0, slowed: false, peak: 0, kills: 0, celestials: 0, shards: 0, stars: 0, born: 0, survival: 0, bites: 0, biteImmuneId: -1, biteImmuneUntil: 0,
       respawnAt: 0, gulp: 0, combo: 0, comboTimer: 0, bestCombo: 0,
       brain: isPlayer ? null : {
         think: 0, goalX: 0, goalZ: 0, wanderX: 0, wanderZ: 0, wanderTimer: 0,
@@ -494,6 +508,23 @@ export class Sim {
   ranking(): Worm[] {
     return this.worms.filter(w => w.alive).sort((a, b) => b.xs.length - a.xs.length)
   }
+  roundStandings(): RoundStanding[] {
+    for (const w of this.worms) if (w.alive) w.survival = Math.max(w.survival, this.time - w.born)
+    const metric = (w: Worm) => this.round?.win === 'survival' ? w.survival : this.round?.win === 'stars' ? w.stars : w.peak
+    return [...this.worms].sort((a, b) => metric(b) - metric(a) || b.peak - a.peak || b.kills - a.kills).map(w => ({
+      name: w.name, length: w.peak, kills: w.kills, stars: w.stars, survival: Math.floor(w.survival), team: w.team, isPlayer: w.isPlayer,
+    }))
+  }
+  roundScores(standings = this.roundStandings()): [number, number] {
+    if (!this.round || this.mode !== 'team') return [standings.find(s => s.isPlayer)?.length ?? 0, standings[0]?.length ?? 0]
+    const score = (team: number) => standings.filter(s => s.team === team).reduce((n, s) => n + (this.round?.win === 'stars' ? s.stars : this.round?.win === 'survival' ? s.survival : s.length), 0)
+    return [score(0), score(1)]
+  }
+  roundWinner(standings = this.roundStandings()): 0 | 1 | -1 {
+    if (!this.round) return -1
+    if (this.mode === 'team') { const scores = this.roundScores(standings); return scores[0] === scores[1] ? -1 : scores[0] > scores[1] ? 0 : 1 }
+    return standings[0]?.isPlayer ? 0 : 1
+  }
 
   gateAt(g: Gate) {
     return gateState(this.time, g.period, g.on, g.offset)
@@ -510,12 +541,15 @@ export class Sim {
     }
     this.time += dt
     if (this.tooSmallCooldown > 0) this.tooSmallCooldown -= dt
-    if (this.mode === 'team' && !this.matchOver) {
+    if ((this.mode === 'team' || this.round) && !this.matchOver) {
       this.matchLeft -= dt
       if (this.matchLeft <= 0) {
         this.matchLeft = 0
         this.matchOver = true
-        this.events.push({ type: 'matchEnd', scores: this.teamScores() })
+        const standings = this.round ? this.roundStandings() : undefined
+        const scores = this.round ? this.roundScores(standings!) : this.teamScores()
+        const winner = this.round ? this.roundWinner(standings!) : undefined
+        this.events.push({ type: 'matchEnd', scores, standings, winner })
       }
     }
 
@@ -866,6 +900,7 @@ export class Sim {
 
   kill(w: Worm, killer: Worm | null, cause: DeathCause): void {
     if (!w.alive) return
+    w.survival = Math.max(w.survival, this.time - w.born)
     w.alive = false
     w.boosting = false
     w.respawnAt = this.time + 3 + this.random() * 3
@@ -943,13 +978,14 @@ export class Sim {
           o.z -= (dz / d) * pull
         }
       }
-      if (w.isPlayer) {
+      {
         for (const s of this.shards) {
           if (!s.alive) continue
           const d = Math.hypot(s.x - hx, s.z - hz)
           if (d < reach + 0.4) {
             s.alive = false
             w.shards += 1
+            w.stars += 1
             this.events.push({ type: 'shard', worm: w, x: s.x, z: s.z })
           } else if (magnet > 0 && d < magnet) {
             const pull = Math.min(d, 16 * dt)
@@ -1067,20 +1103,20 @@ export class Sim {
   private maintain(dt: number): void {
     let orbCount = 0
     for (const o of this.orbs) if (o.alive) orbCount++
-    for (let i = 0; i < 8 && orbCount < CONFIG.arena.food; i++, orbCount++) this.spawnOrb()
+    for (let i = 0; i < 8 && orbCount < (this.roundTuning?.food ?? CONFIG.arena.food); i++, orbCount++) this.spawnOrb()
     if (this.orbs.length > 1600) this.orbs = this.orbs.filter(o => o.alive)
     const shards = this.shards.filter(s => s.alive)
     if (shards.length !== this.shards.length) this.shards = shards
-    if (this.shards.length < CONFIG.arena.stardust && this.random() < dt * 0.8) this.spawnShard()
+    if (this.shards.length < (this.roundTuning?.stardust ?? CONFIG.arena.stardust) && this.random() < dt * 0.8) this.spawnShard()
     this.pickups = this.pickups.filter(p => p.alive)
     this.spawnTimers.pickup -= dt
-    if (this.pickups.length < CONFIG.arena.pickups && this.spawnTimers.pickup <= 0) {
+    if (this.pickups.length < (this.roundTuning?.pickups ?? CONFIG.arena.pickups) && this.spawnTimers.pickup <= 0) {
       this.spawnTimers.pickup = 2.5
       this.spawnPickup()
     }
     this.celestials = this.celestials.filter(c => c.alive)
     this.spawnTimers.celestial -= dt
-    if (this.celestials.length < CONFIG.arena.celestials && this.spawnTimers.celestial <= 0) {
+    if (this.celestials.length < (this.roundTuning?.celestials ?? CONFIG.arena.celestials) && this.spawnTimers.celestial <= 0) {
       this.spawnTimers.celestial = 3
       this.spawnCelestial()
     }

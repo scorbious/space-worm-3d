@@ -8,7 +8,7 @@ import { GameLoop } from './engine/loop'
 import { purchaseSkin, SAVE_KEY, SaveStore, type SaveData } from './engine/save'
 import type { Game, LifeResult } from './game/game'
 import type { HintId } from './game/threats'
-import { applyLife, insertLife, stardustForLife, type Mode } from './game/rules'
+import { applyLife, insertLife, stardustForLife, type CompetitiveRound, type Mode } from './game/rules'
 import { tuning } from './game/tuning'
 import { TouchControls } from './ui/touch'
 import { Ui } from './ui/ui'
@@ -48,7 +48,7 @@ async function boot(): Promise<void> {
   window.addEventListener('keydown', unlockAudio, { once: true })
 
   let starting = false
-  const play = async (mode: Mode) => {
+  const play = async (mode: Mode, round?: CompetitiveRound) => {
     if (!game || starting) return
     network?.leave()
     ui.clearMultiplayer()
@@ -69,7 +69,7 @@ async function boot(): Promise<void> {
     }
     tuning.activate('run')
     match = { bestLife: 0, earned: 0 }
-    game.start(mode)
+    game.start(mode, round)
     audio.setScene('arena')
     audio.play('start')
     ui.show('hud')
@@ -227,9 +227,9 @@ async function boot(): Promise<void> {
       match.bestLife = Math.max(match.bestLife, result.peakLength)
       match.earned += info.earned
       const death = { result, earned: info.earned, newBest: info.newBest, localRank: info.localRank }
-      if (result.mode === 'ffa') {
+      if (!result.final && result.mode === 'ffa') {
         deathTimer = window.setTimeout(() => ui.showDeath(death), 1100)
-      } else {
+      } else if (!result.final) {
         ui.showDeath(death)
         ui.toast('toast.stardust', { n: info.earned }, 'power')
       }

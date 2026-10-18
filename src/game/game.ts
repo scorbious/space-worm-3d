@@ -13,11 +13,11 @@ import type { Quality } from '../engine/save'
 import type { Renderer } from '../engine/renderer'
 import { CONFIG } from './config'
 import { CELESTIALS, skinById, type CelestialId, type PickupId } from './content'
-import { powerEffects, type Mode, type PowerStacks } from './rules'
+import { powerEffects, type CompetitiveRound, type Mode, type PowerStacks } from './rules'
 import { validColor, validHead, type HeadStyle, type WormColor } from './appearance'
 import { SPECIAL_COLORS, type SurpriseId, type TimedTrapId } from './specials'
 import type { EnvironmentId } from './environmentDefs'
-import { Sim, type DeathCause, type PlayerControl, type Worm } from './sim'
+import { Sim, type DeathCause, type PlayerControl, type RoundStanding, type Worm } from './sim'
 import { View } from './view'
 import { gulpFeedback } from './faceFeedback'
 import { NetworkSim } from './networkSim'
@@ -41,7 +41,7 @@ export type LifeResult = {
   final: boolean
 }
 
-export type MatchResult = { scores: [number, number]; winner: 0 | 1 | -1; playerTeam: 0 }
+export type MatchResult = { scores: [number, number]; winner: 0 | 1 | -1; playerTeam: 0; standings?: RoundStanding[]; round?: CompetitiveRound; mode?: Mode }
 
 export type FeedItem = { killer: string | null; victim: string; cause: DeathCause; involvesPlayer: boolean; playerKilled: boolean; team?: [number, number] }
 
@@ -83,6 +83,7 @@ export type HudState = {
   stacks: PowerStacks
   teamScores: [number, number]
   matchLeft: number
+  round?: CompetitiveRound
   leaders: { name: string; length: number; isPlayer: boolean; team: number; rank: number }[]
   rimDanger: number
   respawnIn: number
@@ -194,12 +195,12 @@ export class Game {
     this.audio.setScene('title')
   }
 
-  start(mode: Mode): void {
+  start(mode: Mode, round?: CompetitiveRound): void {
     this.networkSim = null
     this.sendOnlineInput = null
     const p = this.profile()
     this.matchType = mode
-    this.sim = new Sim({ mode, playerName: p.name, playerSkin: p.skin, playerColor: p.color, headStyle: p.headStyle })
+    this.sim = new Sim({ mode, round, playerName: p.name, playerSkin: p.skin, playerColor: p.color, headStyle: p.headStyle })
     this.sim.events.length = 0
     this.view.bind(this.sim)
     this.mode = 'playing'
@@ -417,6 +418,7 @@ export class Game {
           this.hooks.shard()
           break
         case 'shard':
+          if (e.worm !== P) break
           this.audio.play('shard')
           fx.shard(e.x, e.z)
           this.hooks.shard()
@@ -543,9 +545,9 @@ export class Game {
           this.audio.setBoosting(false)
           this.audio.setWell(0)
           this.audio.setScene('results')
-          const winner = e.scores[0] === e.scores[1] ? -1 : e.scores[0] > e.scores[1] ? 0 : 1
+          const winner = e.winner ?? (e.scores[0] === e.scores[1] ? -1 : e.scores[0] > e.scores[1] ? 0 : 1)
           this.audio.play(winner === 0 ? 'win' : 'lose')
-          this.hooks.matchEnd({ scores: e.scores, winner, playerTeam: 0 })
+          this.hooks.matchEnd({ scores: e.scores, winner, playerTeam: 0, standings: e.standings, round: sim.round, mode: sim.mode })
           break
         }
         case 'stage':
@@ -791,6 +793,7 @@ export class Game {
       stacks: P.stacks,
       teamScores: sim.teamScores(),
       matchLeft: sim.matchLeft,
+      round: sim.round,
       ...(this.networkSim?.latest ? { online: {
         ping: this.onlinePing, players: this.networkSim.latest.players.filter(p => p.connected).length,
         total: this.networkSim.latest.players.length, score: this.networkSim.playerScore,

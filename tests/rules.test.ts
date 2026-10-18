@@ -182,4 +182,19 @@ describe('simulation', () => {
     expect(ended).toBe(true)
     expect(sim.matchOver).toBe(true)
   })
+  it('applies competitive map, timer and 2v2 setup', () => {
+    const sim = new Sim({ mode: 'team', seed: 17, playerName: 'Test', playerSkin: 'nebula', round: { duration: 180, win: 'stars', map: 'sprint', teamSize: 2 } })
+    expect(sim.radius).toBe(96)
+    expect(sim.matchLeft).toBe(180)
+    expect(sim.worms.filter(w => w.team === 0)).toHaveLength(2)
+    expect(sim.worms.filter(w => w.team === 1)).toHaveLength(2)
+    sim.matchLeft = 0.01
+    sim.step(1 / 60, null)
+    const end = sim.events.find(e => e.type === 'matchEnd')
+    expect(end?.type).toBe('matchEnd')
+    if (end?.type === 'matchEnd') {
+      expect(end.standings).toHaveLength(4)
+      expect(end.winner).toBeDefined()
+    }
+  })
 })

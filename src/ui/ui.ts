@@ -11,7 +11,7 @@ import { appearanceSkin, HEAD_STYLES, validColor, validHead, WORM_COLORS } from 
 import type { FeedItem, Game, HudState, LifeResult, MatchResult, ThreatArrow } from '../game/game'
 import { glyphSvg, type GlyphId } from '../game/glyphs'
 import type { HintId } from '../game/threats'
-import { formatClock, type Mode, type Records } from '../game/rules'
+import { formatClock, type CompetitiveRound, type Mode, type Records } from '../game/rules'
 import type { LobbyState, MultiplayerStatus, MultiplayerTransport, OnlineMatchEnd, PlayerSeat } from '../net/multiplayer'
 import { icon } from './icons'
 import { Minimap } from './minimap'
@@ -21,7 +21,7 @@ import { assets } from '../engine/assets'
 export type Screen = 'boot' | 'loading' | 'title' | 'hud' | 'pause' | 'settings' | 'skins' | 'records' | 'howto' | 'death' | 'match' | 'multiplayer'
 
 export type UiActions = {
-  play(mode: Mode): void
+  play(mode: Mode, round?: CompetitiveRound): void
   respawn(): void
   resume(): void
   pause(): void
@@ -132,7 +132,18 @@ export class Ui {
             <button class="mode-card ffa" data-action="play-ffa">${icon('play')}<strong>${T('title.ffa')}</strong><small>${T('title.ffaDesc')}</small></button>
             <button class="mode-card team" data-action="play-team">${icon('team')}<strong>${T('title.team')}</strong><small>${T('title.teamDesc')}</small></button>
           </div>
+          <div class="competitive-panel">
+            <div class="competitive-heading"><span class="eyebrow">${T('title.competitiveEyebrow')}</span><strong>${T('title.competitive')}</strong><small>${T('title.competitiveDesc')}</small></div>
+            <div class="competitive-options">
+              <label><span>${T('title.roundDuration')}</span><select data-round-setting="duration"><option value="180">${T('title.round3')}</option><option value="300">${T('title.round5')}</option></select></label>
+              <label><span>${T('title.winCondition')}</span><select data-round-setting="win"><option value="score">${T('title.winScore')}</option><option value="survival">${T('title.winSurvival')}</option><option value="stars">${T('title.winStars')}</option></select></label>
+              <label><span>${T('title.map')}</span><select data-round-setting="map"><option value="sprint">${T('title.mapSprint')}</option><option value="exploration">${T('title.mapExploration')}</option></select></label>
+              <label><span>${T('title.teams')}</span><select data-round-setting="teams"><option value="2">${T('title.teams2v2')}</option><option value="6">${T('title.teams6v6')}</option><option value="ffa">${T('title.teamsFfa')}</option></select></label>
+            </div>
+            <button class="btn competitive-cta" data-action="play-competitive">${icon('trophy')}${T('title.playCompetitive')}</button>
+          </div>
           <button class="btn multiplayer-cta" data-action="multiplayer">${icon('team')}${T('title.multiplayer')}</button>
+          <a class="developer-link" href="https://t.me/LordOfShdow" target="_blank" rel="noopener noreferrer">${icon('team')}${T('title.developer')}</a>
           <div class="title-links">
             ${btn('skins', 'title.skins', 'ghost', 'palette')}
             ${btn('records', 'title.records', 'ghost', 'trophy')}
@@ -162,6 +173,7 @@ export class Ui {
           <div class="team-side orange"><b data-bind="teamB">0</b><span data-i18n="hud.team.orange"></span></div>
           <div class="team-clock" data-bind="clock">4:00</div>
         </div>
+        <div class="hud-round panel" hidden><span data-bind="roundLabel"></span><b data-bind="roundClock"></b></div>
         <div class="hud-tr">
           <button class="icon-btn" data-action="pause" data-i18n-title="hud.pause">${icon('pause')}</button>
           <div class="leaders panel"><h4 data-i18n="hud.leaders"></h4><ol data-bind="leaders"></ol></div>
@@ -334,6 +346,15 @@ export class Ui {
     switch (action) {
       case 'play-ffa': return this.actions.play('ffa')
       case 'play-team': return this.actions.play('team')
+      case 'play-competitive': {
+        const value = (key: string, fallback: string) => this.root.querySelector<HTMLSelectElement>(`[data-round-setting="${key}"]`)?.value ?? fallback
+        const duration = value('duration', '180') === '300' ? 300 : 180
+        const win = value('win', 'score') as CompetitiveRound['win']
+        const map = value('map', 'sprint') as CompetitiveRound['map']
+        const teamValue = value('teams', '2')
+        const round: CompetitiveRound = { duration, win, map, teamSize: teamValue === '6' ? 6 : 2 }
+        return this.actions.play(teamValue === 'ffa' ? 'ffa' : 'team', round)
+      }
       case 'multiplayer':
         this.actions.multiplayer('open')
         return
@@ -351,7 +372,7 @@ export class Ui {
         this.actions.multiplayer(action.slice(3), el.dataset.team)
         return
       case 'respawn': return this.actions.respawn()
-      case 'again': return this.actions.play(el.dataset.mode === 'team' ? 'team' : 'ffa')
+      case 'again': { const mode = el.dataset.mode === 'team' ? 'team' : 'ffa'; return this.actions.play(mode, this.lastMatch?.result.round) }
       case 'resume': return this.actions.resume()
       case 'pause': return this.actions.pause()
       case 'quit': return this.actions.quit()
@@ -743,23 +764,33 @@ export class Ui {
   private renderMatch(): void {
     const { result, bestLife, earned } = this.lastMatch!
     const t = (k: string, v?: Record<string, string | number>) => esc(this.t(k, v))
+    const el = this.root.querySelector<HTMLElement>('[data-bind="match"]')!
+    const round = result.round
+    if (round && result.standings?.length) {
+      const title = result.winner === -1 ? 'match.draw' : result.winner === 0 ? 'match.victory' : 'match.defeat'
+      const ruleKey = round.win === 'stars' ? 'title.winStars' : round.win === 'survival' ? 'title.winSurvival' : 'title.winScore'
+      const mapKey = round.map === 'exploration' ? 'title.mapExploration' : 'title.mapSprint'
+      const formatKey = result.mode === 'team' ? (round.teamSize === 2 ? 'title.teams2v2' : 'title.teams6v6') : 'title.teamsFfa'
+      const value = (row: typeof result.standings[number]) => round.win === 'stars' ? `${this.i18n.n(row.stars)} ${t('match.stars')}` : round.win === 'survival' ? `${formatClock(row.survival)} ${t('match.survival')}` : this.i18n.n(row.length)
+      const rows = result.standings.slice(0, 3).map((row, i) => `<li class="${row.isPlayer ? 'me' : ''}"><span class="place">${t('match.place', { n: i + 1 })}</span><b>${esc(row.name)}${row.isPlayer ? ` (${t('hud.you')})` : ''}</b><strong>${value(row)}</strong><small>${t('death.kills')}: ${this.i18n.n(row.kills)} · ${this.i18n.n(row.stars)} ${t('match.stars')}</small></li>`).join('')
+      el.innerHTML = `<p class="eyebrow">${t('match.round')}</p><h2 class="${title.split('.')[1]}">${t(title)}</h2>
+        <p class="round-summary">${t('match.rule', { name: this.t(ruleKey) })} · ${t('match.map', { name: this.t(mapKey) })} · ${t('match.format', { name: this.t(formatKey) })}</p>
+        <h3 class="top-three-title">${t('match.topThree')}</h3><ol class="top-three">${rows}</ol>
+        <p>${t('match.bestLife', { n: this.i18n.n(bestLife) })}</p><p class="gold">${icon('stardust')} +<span data-count="${earned}">${this.i18n.n(earned)}</span></p>
+        <div class="actions"><button class="btn primary" data-action="again" data-mode="${result.mode === 'team' ? 'team' : 'ffa'}">${icon('play')}${t('match.again')}</button><button class="btn ghost" data-action="quit">${t('death.title.menu')}</button></div>`
+      this.countUp(el)
+      if (result.winner === 0) window.setTimeout(() => this.sparks.burstAround(el.querySelector('h2') ?? el, '#ffd54f', 40), 200)
+      return
+    }
     const title = result.winner === -1 ? 'match.draw' : result.winner === result.playerTeam ? 'match.victory' : 'match.defeat'
     const total = Math.max(1, result.scores[0] + result.scores[1])
-    const el = this.root.querySelector<HTMLElement>('[data-bind="match"]')!
     el.innerHTML = `
       <h2 class="${title.split('.')[1]}">${t(title)}</h2>
       <p class="sub">${t('match.scores')}</p>
-      <div class="versus">
-        <div class="side blue"><small>${t('hud.team.blue')}</small><b>${this.i18n.n(result.scores[0])}</b></div>
-        <div class="side orange"><small>${t('hud.team.orange')}</small><b>${this.i18n.n(result.scores[1])}</b></div>
-      </div>
+      <div class="versus"><div class="side blue"><small>${t('hud.team.blue')}</small><b>${this.i18n.n(result.scores[0])}</b></div><div class="side orange"><small>${t('hud.team.orange')}</small><b>${this.i18n.n(result.scores[1])}</b></div></div>
       <div class="team-bar big"><i class="a" style="width:${(result.scores[0] / total) * 100}%"></i><i class="b" style="width:${(result.scores[1] / total) * 100}%"></i></div>
-      <p>${t('match.bestLife', { n: this.i18n.n(bestLife) })}</p>
-      <p class="gold">${icon('stardust')} +<span data-count="${earned}">${this.i18n.n(earned)}</span></p>
-      <div class="actions">
-        <button class="btn primary" data-action="again" data-mode="team">${icon('play')}${t('match.again')}</button>
-        <button class="btn ghost" data-action="quit">${t('death.title.menu')}</button>
-      </div>`
+      <p>${t('match.bestLife', { n: this.i18n.n(bestLife) })}</p><p class="gold">${icon('stardust')} +<span data-count="${earned}">${this.i18n.n(earned)}</span></p>
+      <div class="actions"><button class="btn primary" data-action="again" data-mode="team">${icon('play')}${t('match.again')}</button><button class="btn ghost" data-action="quit">${t('death.title.menu')}</button></div>`
     this.countUp(el)
     if (result.winner === result.playerTeam) window.setTimeout(() => this.sparks.burstAround(el.querySelector('h2') ?? el, '#ffd54f', 40), 200)
   }
@@ -863,6 +894,14 @@ export class Ui {
         this.bind('clock', clock)
         hud.querySelector('.team-clock')!.classList.toggle('urgent', h.matchLeft <= 30)
       })
+    }
+    const roundEl = hud.querySelector<HTMLElement>('.hud-round')!
+    roundEl.hidden = !h.round
+    if (h.round) {
+      const ruleKey = h.round.win === 'stars' ? 'hud.winStars' : h.round.win === 'survival' ? 'hud.winSurvival' : 'hud.winScore'
+      this.setIf('roundClock', formatClock(h.matchLeft), () => this.bind('roundClock', formatClock(h.matchLeft)))
+      this.setIf('roundLabel', ruleKey, () => this.bind('roundLabel', `${this.t('hud.round')} · ${this.t(ruleKey)}`))
+      roundEl.classList.toggle('urgent', h.matchLeft <= 30)
     }
     const leadersKey = h.leaders.map(l => `${l.rank}${l.name}${l.length}`).join('|')
     this.setIf('leaders', leadersKey, () => {

@@ -6,6 +6,26 @@ import { CELESTIALS, POWERS, POWER_IDS, type CelestialId, type PowerId } from '.
 
 export type Mode = 'ffa' | 'team'
 
+/** Optional short competitive round settings. Standard FFA/team runs leave this unset. */
+export type CompetitiveWin = 'score' | 'survival' | 'stars'
+export type CompetitiveMap = 'sprint' | 'exploration'
+export type CompetitiveRound = {
+  duration: 180 | 300
+  win: CompetitiveWin
+  map: CompetitiveMap
+  teamSize?: 2 | 6
+}
+export const DEFAULT_COMPETITIVE_ROUND: CompetitiveRound = { duration: 180, win: 'score', map: 'sprint', teamSize: 2 }
+export function normalizeCompetitiveRound(round?: Partial<CompetitiveRound>): CompetitiveRound | undefined {
+  if (!round) return undefined
+  return {
+    duration: round.duration === 300 ? 300 : 180,
+    win: round.win === 'survival' || round.win === 'stars' ? round.win : 'score',
+    map: round.map === 'exploration' ? 'exploration' : 'sprint',
+    teamSize: round.teamSize === 6 ? 6 : 2,
+  }
+}
+
 export type PowerStacks = Record<PowerId, number>
 export const emptyStacks = (): PowerStacks => ({ tide: 0, tail: 0, core: 0, drive: 0, heart: 0 })
 
