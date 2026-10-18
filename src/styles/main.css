@@ -718,3 +718,22 @@ body.reduced-motion .tarrow.urgent .chev::before { animation: none; box-shadow: 
   .mode-card small { font-size: 12px; }
   .title-best, .hint { display: none; }
 }
+
+/* Desktop compact mode: reclaim vertical space without shrinking the game canvas.
+   Touch layouts below 768px keep their larger hit targets unchanged. */
+@media (min-width: 769px) {
+  :root { --screen-gutter: clamp(10px, 1.5vw, 22px); --radius: 14px; }
+  .card { padding: clamp(14px, 1.45vw, 22px); gap: 10px; }
+  .card h2 { font-size: clamp(21px, 1.75vw, 27px); }
+  .card h3 { margin-block: 7px 5px; }
+  .btn { min-height: 42px; padding: 8px 16px; font-size: 15px; }
+  .icon-btn { width: 40px; height: 40px; }
+  .title-wrap { gap: 12px; }
+  .logo.big { font-size: clamp(38px, 6.2vw, 68px); }
+  .tagline { font-size: clamp(14px, 1.7vw, 17px); }
+  .modes { gap: 10px; }
+  .mode-card { min-height: clamp(76px, 9vh, 104px); padding: 14px 16px; }
+  .mode-card strong { font-size: 19px; }
+  .mode-card small { font-size: 12.5px; }
+  .settings-card .row { min-height: clamp(40px, 4.5vh, 52px); padding-block: 6px; }
+}
