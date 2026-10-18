@@ -17,6 +17,7 @@ import { powerEffects, type CompetitiveRound, type Mode, type PowerStacks } from
 import { validColor, validHead, type HeadStyle, type WormColor } from './appearance'
 import { SPECIAL_COLORS, type SurpriseId, type TimedTrapId } from './specials'
 import type { EnvironmentId } from './environmentDefs'
+import { campaignGoalProgress, type CampaignStage, type CampaignStats } from './campaign'
 import { Sim, type DeathCause, type PlayerControl, type RoundStanding, type Worm } from './sim'
 import { View } from './view'
 import { gulpFeedback } from './faceFeedback'
@@ -59,6 +60,7 @@ export type GameHooks = {
   callout(key: string, vars: Record<string, string | number>, tier: 1 | 2 | 3): void
   /** First time a threat type comes into view (once per save). */
   hint(id: HintId): void
+  campaignClear(stage: CampaignStage, stats: CampaignStats): void
 }
 /** Edge-of-screen pointer toward an off-screen threat, in CSS pixels from the top-left. */
 export type ThreatArrow = { key: string; x: number; y: number; angle: number; glyph: GlyphId; tone: ThreatTone; urgency: number }
@@ -101,6 +103,7 @@ export type HudState = {
   /** A lethal hazard or rival is on the predicted path right now. */
   threatImminent: boolean
   online?: { ping: number; players: number; total: number; score: number; team: Team | 'spectator' }
+  campaign?: { stage: number; goal: CampaignStage['goal']; progress: number; target: number }
 }
 const HINT_ORDER: HintId[] = ['rival', 'edible', 'asteroid', 'gate', 'well', 'rim', 'bite']
 const projV = new THREE.Vector3()
@@ -195,12 +198,12 @@ export class Game {
     this.audio.setScene('title')
   }
 
-  start(mode: Mode, round?: CompetitiveRound): void {
+  start(mode: Mode, round?: CompetitiveRound, campaign?: CampaignStage): void {
     this.networkSim = null
     this.sendOnlineInput = null
     const p = this.profile()
     this.matchType = mode
-    this.sim = new Sim({ mode, round, playerName: p.name, playerSkin: p.skin, playerColor: p.color, headStyle: p.headStyle })
+    this.sim = new Sim({ mode, round, campaign, playerName: p.name, playerSkin: p.skin, playerColor: p.color, headStyle: p.headStyle, bots: campaign?.bots })
     this.sim.events.length = 0
     this.view.bind(this.sim)
     this.mode = 'playing'
@@ -555,6 +558,14 @@ export class Game {
           this.hooks.callout('callout.stage', { n: e.stage }, 3)
           this.hooks.toast('toast.stage', { n: e.stage }, 'power')
           break
+        case 'campaignClear':
+          this.mode = 'ended'
+          this.audio.setBoosting(false)
+          this.audio.setWell(0)
+          this.audio.setScene('results')
+          this.audio.play('win')
+          this.hooks.campaignClear(e.stage, e.stats)
+          break
         case 'surpriseSpawn':
           if (this.mode === 'playing') {
             this.audio.play('warn', 1.4, 0.6)
@@ -773,6 +784,7 @@ export class Game {
     const fx = powerEffects(P.stacks)
     void fx
     const surprise = sim.surprises.find(s => s.alive && s.expiresAt > sim.time)
+    const campaignStats = sim.campaignProgress()
     return {
       length: P.alive ? P.xs.length : 0,
       stage: sim.stage,
@@ -794,6 +806,12 @@ export class Game {
       teamScores: sim.teamScores(),
       matchLeft: sim.matchLeft,
       round: sim.round,
+      ...(sim.campaignStage && campaignStats ? { campaign: {
+        stage: sim.campaignStage.id,
+        goal: sim.campaignStage.goal,
+        progress: campaignGoalProgress(sim.campaignStage, campaignStats),
+        target: sim.campaignStage.target,
+      } } : {}),
       ...(this.networkSim?.latest ? { online: {
         ping: this.onlinePing, players: this.networkSim.latest.players.filter(p => p.connected).length,
         total: this.networkSim.latest.players.length, score: this.networkSim.playerScore,

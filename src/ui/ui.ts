@@ -4,7 +4,7 @@
  */
 import type { Audio } from '../engine/audio'
 import type { I18n } from '../engine/i18n'
-import { LOCALES, sanitizeName, type Locale, type SaveData, type SaveStore } from '../engine/save'
+import { CampaignStore, LOCALES, sanitizeName, type Locale, type SaveData, type SaveStore } from '../engine/save'
 import { CONFIG } from '../game/config'
 import { CELESTIALS, CELESTIAL_IDS, PICKUP_IDS, POWERS, POWER_IDS, SKINS, skinById, type CelestialId, type PickupId } from '../game/content'
 import { appearanceSkin, HEAD_STYLES, validColor, validHead, WORM_COLORS } from '../game/appearance'
@@ -12,13 +12,14 @@ import type { FeedItem, Game, HudState, LifeResult, MatchResult, ThreatArrow } f
 import { glyphSvg, type GlyphId } from '../game/glyphs'
 import type { HintId } from '../game/threats'
 import { formatClock, type CompetitiveRound, type Mode, type Records } from '../game/rules'
+import { CAMPAIGN_STAGES, campaignGoalProgress, type CampaignStage, type CampaignStats } from '../game/campaign'
 import type { LobbyState, MultiplayerStatus, MultiplayerTransport, OnlineMatchEnd, PlayerSeat } from '../net/multiplayer'
 import { icon } from './icons'
 import { Minimap } from './minimap'
 import { Sparks } from './sparks'
 import { assets } from '../engine/assets'
 
-export type Screen = 'boot' | 'loading' | 'title' | 'hud' | 'pause' | 'settings' | 'skins' | 'records' | 'howto' | 'death' | 'match' | 'multiplayer'
+export type Screen = 'boot' | 'loading' | 'title' | 'hud' | 'pause' | 'settings' | 'skins' | 'records' | 'howto' | 'death' | 'match' | 'multiplayer' | 'campaign' | 'campaignResult'
 
 export type UiActions = {
   play(mode: Mode, round?: CompetitiveRound): void
@@ -32,6 +33,7 @@ export type UiActions = {
   /** Forget which first-encounter hazard hints were shown. */
   resetHints(): void
   multiplayer(action: string, value?: string): void
+  campaign(action: string, stage?: number): void
 }
 /** Glyph shown for each threat hint / legend row / death cause. */
 const THREAT_GLYPH: Record<string, GlyphId> = { asteroid: 'skull', gate: 'bolt', well: 'spiral', rim: 'rim', rival: 'jaw', worm: 'jaw', head: 'jaw', self: 'jaw', ally: 'shield', edible: 'star', bite: 'bite' }
@@ -45,6 +47,7 @@ const EFFECT_MAX: Record<PickupId, () => number> = {
 }
 
 type DeathInfo = { result: LifeResult; earned: number; newBest: boolean; localRank: number }
+type CampaignResultInfo = { success: boolean; stage: CampaignStage; stats: CampaignStats; reward: number; unlockedStage: number }
 
 export class Ui {
   screen: Screen = 'boot'
@@ -61,6 +64,7 @@ export class Ui {
   private lastDeath: DeathInfo | null = null
   private lastMatch: { result: MatchResult; bestLife: number; earned: number } | null = null
   private lastOnlineMatch: OnlineMatchEnd | null = null
+  private lastCampaignResult: CampaignResultInfo | null = null
   private onlineWaiting = false
   private hudCache = new Map<string, string>()
   private sparks!: Sparks
@@ -81,6 +85,7 @@ export class Ui {
   constructor(
     private readonly i18n: I18n,
     private readonly save: SaveStore,
+    private readonly campaignStore: CampaignStore,
     private readonly audio: Audio,
     private readonly actions: UiActions,
   ) {
@@ -128,6 +133,7 @@ export class Ui {
             <label class="name-field"><span data-i18n="title.name"></span><input id="pilot-name" maxlength="16" autocomplete="off" spellcheck="false" /></label>
             <div class="wallet">${icon('stardust')}<b data-bind="stardust">0</b></div>
           </div>
+          <button class="campaign-launch" data-action="campaign">${icon('trophy')}<span><b>${T('campaign.title')}</b><small>${T('campaign.subtitle')}</small></span><strong>${T('campaign.open')}</strong></button>
           <div class="modes">
             <button class="mode-card ffa" data-action="play-ffa">${icon('play')}<strong>${T('title.ffa')}</strong><small>${T('title.ffaDesc')}</small></button>
             <button class="mode-card team" data-action="play-team">${icon('team')}<strong>${T('title.team')}</strong><small>${T('title.teamDesc')}</small></button>
@@ -153,6 +159,14 @@ export class Ui {
           <p class="title-best" data-bind="best"></p>
           <p class="hint"><span class="hint-mouse" data-i18n="title.hint"></span><span class="hint-touch" data-i18n="title.hintTouch"></span></p>
         </div>
+      </section>
+
+      <section class="screen menu" data-screen="campaign">
+        <div class="panel card wide campaign-card" data-bind="campaign"></div>
+      </section>
+
+      <section class="screen menu" data-screen="campaignResult">
+        <div class="panel card campaign-result-card" data-bind="campaignResult"></div>
       </section>
 
       <section class="screen hud" data-screen="hud">
@@ -204,6 +218,7 @@ export class Ui {
             <span class="chip chip-rim">${icon('rim')}<span data-i18n="hud.rim"></span></span>
           </div>
         </div>
+        <div class="campaign-hud panel" data-bind="campaignHud" hidden></div>
         <div class="hud-tc">
           <div class="crown-chip" data-bind="crown"></div>
           <div class="surprise-alert" data-bind="surprise" role="status" hidden></div>
@@ -346,6 +361,10 @@ export class Ui {
     switch (action) {
       case 'play-ffa': return this.actions.play('ffa')
       case 'play-team': return this.actions.play('team')
+      case 'campaign': return this.actions.campaign('open')
+      case 'campaign-start': return this.actions.campaign('start', Number(el.dataset.stage))
+      case 'campaign-next': return this.actions.campaign('next', Number(el.dataset.stage))
+      case 'campaign-retry': return this.actions.campaign('start', Number(el.dataset.stage))
       case 'play-competitive': {
         const value = (key: string, fallback: string) => this.root.querySelector<HTMLSelectElement>(`[data-round-setting="${key}"]`)?.value ?? fallback
         const duration = value('duration', '180') === '300' ? 300 : 180
@@ -413,6 +432,7 @@ export class Ui {
   back(): boolean {
     if (this.screen === 'settings') this.show(this.settingsReturn)
     else if (this.screen === 'skins' || this.screen === 'records' || this.screen === 'howto') this.show(this.subReturn)
+    else if (this.screen === 'campaign' || this.screen === 'campaignResult') this.show('title')
     else if (this.screen === 'multiplayer') {
       this.actions.multiplayer('leave')
       this.show('title')
@@ -454,6 +474,8 @@ export class Ui {
       const input = this.root.querySelector<HTMLInputElement>('#pilot-name')!
       input.value = this.save.data.playerName
     }
+    if (screen === 'campaign') this.renderCampaign()
+    if (screen === 'campaignResult' && this.lastCampaignResult) this.renderCampaignResult()
     if (screen === 'skins') {
       this.refreshWallet()
       this.renderSkins()
@@ -504,6 +526,8 @@ export class Ui {
     this.refreshSettings()
     this.hudCache.clear()
     if (this.screen === 'title') this.show('title')
+    if (this.screen === 'campaign') this.renderCampaign()
+    if (this.screen === 'campaignResult' && this.lastCampaignResult) this.renderCampaignResult()
     if (this.screen === 'skins') this.renderSkins()
     if (this.screen === 'records') this.renderRecords()
     if (this.screen === 'howto') this.renderHowto()
@@ -512,6 +536,53 @@ export class Ui {
     if (this.screen === 'match' && this.lastOnlineMatch) this.renderOnlineMatch()
     else if (this.screen === 'match' && this.lastMatch) this.renderMatch()
     if (this.screen === 'multiplayer') this.renderMultiplayer()
+  }
+
+  private renderCampaign(): void {
+    const data = this.campaignStore.data
+    const t = (key: string, vars?: Record<string, string | number>) => esc(this.t(key, vars))
+    const completed = new Set(data.completedStages)
+    const cards = CAMPAIGN_STAGES.map(stage => {
+      const open = stage.id <= data.unlockedStage
+      const done = completed.has(stage.id)
+      const best = data.bestScores[String(stage.id)]
+      const state = done ? `<span class="campaign-state complete">${t('campaign.completed')}</span>` : open ? `<span class="campaign-state open">${t('campaign.open')}</span>` : `<span class="campaign-state locked">${t('campaign.locked')}</span>`
+      return `<article class="campaign-stage ${open ? 'is-open' : 'is-locked'} ${done ? 'is-complete' : ''}" style="--stage:${stage.id}">
+        <div class="campaign-stage-top"><span class="stage-index">${String(stage.id).padStart(2, '0')}</span><span>${state}</span></div>
+        <h3>${t(`campaign.stage.${stage.id}.name`)}</h3><p>${t(`campaign.stage.${stage.id}.desc`)}</p>
+        <div class="campaign-goal"><small>${t('campaign.goal')}</small><b>${t(`campaign.goal.${stage.goal}`)} · ${this.i18n.n(stage.target)}${stage.goal === 'survival' ? ` ${t('campaign.seconds')}` : ''}</b></div>
+        <div class="campaign-reward">${icon('stardust')}<span>${t('campaign.reward', { n: stage.reward })}</span>${best ? `<em>${t('campaign.best', { n: best })}</em>` : ''}</div>
+        <button class="btn ${open ? (done ? '' : 'primary') : 'ghost'}" data-action="campaign-start" data-stage="${stage.id}" ${open ? '' : 'disabled'}>${open ? t(done ? 'campaign.replay' : 'campaign.start') : t('campaign.locked')}</button>
+      </article>`
+    }).join('')
+    const current = Math.min(data.unlockedStage, CAMPAIGN_STAGES.length)
+    const percent = Math.round((data.completedStages.length / CAMPAIGN_STAGES.length) * 100)
+    const el = this.root.querySelector<HTMLElement>('[data-bind="campaign"]')!
+    el.innerHTML = `<header class="campaign-header"><div><p class="eyebrow">${t('campaign.eyebrow')}</p><h2>${t('campaign.title')}</h2><p>${t('campaign.desc')}</p></div><div class="campaign-progress"><b>${this.i18n.n(data.completedStages.length)} / ${this.i18n.n(CAMPAIGN_STAGES.length)}</b><span>${t('campaign.progress')}</span><i><em style="width:${percent}%"></em></i></div></header>
+      <div class="campaign-current"><span>${t('campaign.current')}</span><strong>${t(`campaign.stage.${current}.name`)}</strong><small>${t('campaign.unlockHint')}</small></div>
+      <div class="campaign-grid">${cards}</div><footer><button class="btn ghost" data-action="back">${t('common.back')}</button></footer>`
+  }
+
+  showCampaignResult(success: boolean, stage: CampaignStage, stats: CampaignStats, reward: number, unlockedStage: number): void {
+    this.lastCampaignResult = { success, stage, stats, reward, unlockedStage }
+    this.renderCampaignResult()
+    this.show('campaignResult')
+  }
+
+  private renderCampaignResult(): void {
+    const result = this.lastCampaignResult!
+    const t = (key: string, vars?: Record<string, string | number>) => esc(this.t(key, vars))
+    const progress = campaignGoalProgress(result.stage, result.stats)
+    const next = result.stage.id < CAMPAIGN_STAGES.length && result.unlockedStage > result.stage.id ? result.stage.id + 1 : 0
+    const el = this.root.querySelector<HTMLElement>('[data-bind="campaignResult"]')!
+    const stat = (label: string, value: string | number) => `<div class="stat"><small>${label}</small><b>${typeof value === 'number' ? this.i18n.n(value) : value}</b></div>`
+    el.innerHTML = `<p class="eyebrow">${t(`campaign.stage.${result.stage.id}.name`)}</p><h2 class="${result.success ? 'success' : 'failure'}">${t(result.success ? 'campaign.clear' : 'campaign.failed')}</h2>
+      <p class="campaign-result-note">${t(result.success ? 'campaign.clearDesc' : 'campaign.failedDesc', { goal: t(`campaign.goal.${result.stage.goal}`), target: result.stage.target })}</p>
+      <div class="campaign-objective"><span>${t('campaign.goal')} · ${t(`campaign.goal.${result.stage.goal}`)}</span><b>${this.i18n.n(progress)} / ${this.i18n.n(result.stage.target)}</b><i><em style="width:${Math.min(100, progress / result.stage.target * 100)}%"></em></i></div>
+      <div class="stats">${stat(t('campaign.stat.length'), result.stats.length)}${stat(t('campaign.stat.peak'), result.stats.peak)}${stat(t('campaign.stat.kills'), result.stats.kills)}${stat(t('campaign.stat.stars'), result.stats.stars)}${stat(t('campaign.stat.time'), formatClock(result.stats.seconds))}</div>
+      ${result.success ? `<p class="campaign-reward-earned">${icon('stardust')}<b>${result.reward ? `+${this.i18n.n(result.reward)}` : t('campaign.claimed')}</b> ${t('campaign.rewardWord')}</p><p class="campaign-evolution">${t('campaign.evolution', { n: result.stage.id })}</p>` : ''}
+      <div class="actions">${result.success && next ? `<button class="btn primary" data-action="campaign-next" data-stage="${next}">${icon('play')}${t('campaign.next')}</button>` : ''}<button class="btn ${result.success && !next ? 'primary' : ''}" data-action="campaign-retry" data-stage="${result.stage.id}">${t('campaign.retry')}</button><button class="btn ghost" data-action="quit">${t('death.title.menu')}</button></div>`
+    if (result.success) window.setTimeout(() => this.sparks.burstAround(el.querySelector('h2') ?? el, '#ffd54f', 42), 200)
   }
 
   private renderSkins(): void {
@@ -831,6 +902,15 @@ export class Ui {
       hud.querySelector('.hud-len b')?.animate([{ transform: 'scale(1.18)', color: '#ffffff' }, { transform: 'scale(1)' }], { duration: 220, easing: 'ease-out' })
     }
     this.lastLen = h.length
+    const campaignHud = hud.querySelector<HTMLElement>('[data-bind="campaignHud"]')!
+    campaignHud.hidden = !h.campaign
+    if (h.campaign) {
+      const goal = this.t(`campaign.goal.${h.campaign.goal}`)
+      const key = `${h.campaign.stage}|${h.campaign.progress}|${h.campaign.target}`
+      this.setIf('campaignHud', key, () => {
+        campaignHud.innerHTML = `<span class="campaign-hud-title">${esc(this.t('campaign.hud', { n: h.campaign!.stage }))}</span><b>${esc(goal)}</b><span>${this.i18n.n(h.campaign!.progress)} / ${this.i18n.n(h.campaign!.target)}</span><i><em style="width:${Math.min(100, h.campaign!.progress / h.campaign!.target * 100)}%"></em></i>`
+      })
+    }
     // Feast combo meter
     const comboOn = h.combo >= 5
     const combo = hud.querySelector<HTMLElement>('[data-bind="comboWrap"]')!

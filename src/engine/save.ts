@@ -5,6 +5,7 @@
 import { SKINS } from '../game/content'
 import { validColor, validHead, type HeadStyle, type WormColor } from '../game/appearance'
 import { emptyRecords, LOCAL_BOARD_SIZE, type LifeEntry, type Records } from '../game/rules'
+import { campaignStage, defaultCampaignProgress, type CampaignProgressData } from '../game/campaign'
 
 export type Locale = 'en' | 'ar'
 export const LOCALES: Locale[] = ['en', 'ar']
@@ -42,6 +43,8 @@ export type SaveData = {
 }
 
 export const SAVE_KEY = 'spaceworm.save'
+/** Separate key keeps the established SaveData schema and competitive history untouched. */
+export const CAMPAIGN_SAVE_KEY = 'spaceworm.campaign'
 
 export function defaultSave(): SaveData {
   return {
@@ -131,6 +134,36 @@ export function parseSave(raw: string | null): SaveData {
   }
 }
 
+/** Parse campaign progress independently so corrupt mission data never invalidates the main save. */
+export function parseCampaignProgress(raw: string | null): CampaignProgressData {
+  const base = defaultCampaignProgress()
+  if (!raw) return base
+  try {
+    const parsed = JSON.parse(raw) as Record<string, unknown>
+    if (!parsed || typeof parsed !== 'object' || parsed.version !== 1) return base
+    const unlockedStage = typeof parsed.unlockedStage === 'number' && Number.isFinite(parsed.unlockedStage)
+      ? Math.min(6, Math.max(1, Math.floor(parsed.unlockedStage))) : 1
+    const completedStages = Array.isArray(parsed.completedStages)
+      ? [...new Set(parsed.completedStages.filter((id): id is number => typeof id === 'number' && Number.isInteger(id) && !!campaignStage(id)).map(id => Math.floor(id)))].sort((a, b) => a - b)
+      : []
+    const bestScores: Record<string, number> = {}
+    if (parsed.bestScores && typeof parsed.bestScores === 'object') {
+      for (const [key, value] of Object.entries(parsed.bestScores as Record<string, unknown>)) {
+        if (campaignStage(Number(key)) && typeof value === 'number' && Number.isFinite(value) && value >= 0) bestScores[key] = Math.floor(value)
+      }
+    }
+    return {
+      version: 1,
+      unlockedStage: Math.max(unlockedStage, completedStages.length ? Math.min(6, Math.max(...completedStages) + 1) : 1),
+      completedStages,
+      bestScores,
+      totalRewards: typeof parsed.totalRewards === 'number' && Number.isFinite(parsed.totalRewards) && parsed.totalRewards >= 0 ? Math.floor(parsed.totalRewards) : 0,
+    }
+  } catch {
+    return base
+  }
+}
+
 /** Buy a skin if affordable; pure so it can be tested. */
 export function purchaseSkin(data: SaveData, skinId: string): SaveData | null {
   const skin = SKINS.find(s => s.id === skinId)
@@ -166,5 +199,20 @@ export class SaveStore {
     } catch {
       // Private browsing or quota: the game keeps working with in-memory settings.
     }
+  }
+}
+
+
+export class CampaignStore {
+  data: CampaignProgressData
+  constructor(private readonly storage: Pick<Storage, 'getItem' | 'setItem'> | undefined = globalThis.localStorage) {
+    let raw: string | null = null
+    try { raw = this.storage?.getItem(CAMPAIGN_SAVE_KEY) ?? null } catch { raw = null }
+    this.data = parseCampaignProgress(raw)
+  }
+
+  replace(data: CampaignProgressData): void {
+    this.data = data
+    try { this.storage?.setItem(CAMPAIGN_SAVE_KEY, JSON.stringify(this.data)) } catch { /* in-memory progress remains usable */ }
   }
 }

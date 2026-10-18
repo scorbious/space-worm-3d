@@ -17,6 +17,7 @@ import {
   addPower, canBite, canConsume, emptyStacks, gateState, lengthFromMass, powerEffects, radiusForLength,
   selfSafeSegments, spacingForRadius, turnRateFor, wellSpeedFactor, normalizeCompetitiveRound, type CompetitiveRound, type Mode, type PowerStacks,
 } from './rules'
+import { campaignGoalComplete, campaignStatsFromWorm, type CampaignStage, type CampaignStats } from './campaign'
 
 // ─── Random ────────────────────────────────────────────────────────────────
 export function rng(seed: number): () => number {
@@ -131,6 +132,7 @@ export type SimEvent =
   | { type: 'bite'; biter: Worm; victim: Worm; lost: number; x: number; z: number; xs: number[]; zs: number[] }
   | { type: 'spawn'; worm: Worm }
   | { type: 'stage'; stage: number; radius: number }
+  | { type: 'campaignClear'; stage: CampaignStage; stats: CampaignStats }
   | { type: 'matchEnd'; scores: [number, number]; standings?: RoundStanding[]; winner?: 0 | 1 | -1 }
   | { type: 'surpriseSpawn'; surprise: Surprise }
   | { type: 'surpriseExpire'; surprise: Surprise }
@@ -193,13 +195,15 @@ function segDistance(px: number, pz: number, ax: number, az: number, bx: number,
 
 const wrapAngle = (a: number) => Math.atan2(Math.sin(a), Math.cos(a))
 
-export type SimOptions = { mode: Mode; seed?: number; playerName: string; playerSkin: string; playerColor?: WormColor; headStyle?: HeadStyle; bots?: number; networkOnly?: boolean; round?: CompetitiveRound }
+export type SimOptions = { mode: Mode; seed?: number; playerName: string; playerSkin: string; playerColor?: WormColor; headStyle?: HeadStyle; bots?: number; networkOnly?: boolean; round?: CompetitiveRound; campaign?: CampaignStage }
 
 export class Sim {
   readonly mode: Mode
   readonly environmentOffset: number
   readonly round: CompetitiveRound | undefined
+  readonly campaignStage: CampaignStage | undefined
   private readonly roundTuning: typeof CONFIG.competitive.maps.sprint | null
+  private campaignCleared = false
   /** Active round seconds; passed unscaled by Game so hit-stop never delays a 180s rotation. */
   environmentTime = 0
   private environmentCompensation = 0
@@ -239,8 +243,10 @@ export class Sim {
   constructor(opts: SimOptions) {
     this.mode = opts.mode
     this.round = normalizeCompetitiveRound(opts.round)
+    this.campaignStage = opts.campaign
     this.roundTuning = this.round ? CONFIG.competitive.maps[this.round.map] : null
-    this.radius = this.roundTuning?.radius ?? CONFIG.arena.radius
+    this.stage = this.campaignStage?.id ?? 1
+    this.radius = this.campaignStage?.arenaRadius ?? this.roundTuning?.radius ?? CONFIG.arena.radius
     this.baseRadius = this.radius
     this.environmentOffset = Math.abs(opts.seed ?? Math.floor(Math.random() * 10000)) % 6
     this.random = rng(opts.seed ?? (Math.random() * 2 ** 31) | 0)
@@ -256,16 +262,22 @@ export class Sim {
       for (let i = 0; i < teamSize; i++) this.createWorm(this.botName(), false, 1, this.randomSkin())
       if (!this.round) this.matchLeft = CONFIG.team.seconds
     } else {
-      const bots = opts.bots ?? this.roundTuning?.bots ?? CONFIG.arena.bots
+      const bots = opts.bots ?? this.campaignStage?.bots ?? this.roundTuning?.bots ?? CONFIG.arena.bots
       for (let i = 0; i < bots; i++) this.createWorm(this.botName(), false, -1, this.randomSkin())
     }
-    const tuning = this.roundTuning
+    const tuning = this.campaignStage ?? this.roundTuning
     for (const w of this.worms) this.spawnWorm(w)
     for (let i = 0; i < (tuning?.food ?? CONFIG.arena.food); i++) this.spawnOrb()
     for (let i = 0; i < (tuning?.stardust ?? CONFIG.arena.stardust); i++) this.spawnShard()
     for (let i = 0; i < (tuning?.pickups ?? CONFIG.arena.pickups); i++) this.spawnPickup()
     for (let i = 0; i < (tuning?.celestials ?? CONFIG.arena.celestials); i++) this.spawnCelestial()
     for (const kind of TRAP_IDS) this.spawnTrap(kind)
+    if (this.campaignStage) {
+      for (const w of this.worms) if (w.brain) {
+        w.brain.aggression = this.campaignStage.botAggression
+        w.brain.skill = this.campaignStage.botSkill
+      }
+    }
   }
 
   // ─── setup ──────────────────────────────────────────────────────────────
@@ -297,12 +309,12 @@ export class Sim {
       !this.asteroids.some(a => Math.hypot(a.x - x, a.z - z) < a.r + m) &&
       !this.wells.some(w => Math.hypot(w.x - x, w.z - z) < w.r + m) &&
       !this.gates.some(g => segDistance(x, z, g.ax, g.az, g.bx, g.bz) < m)
-    for (let tries = 0; this.wells.length < (this.roundTuning?.wells ?? CONFIG.arena.wells) && tries < 400; tries++) {
+    for (let tries = 0; this.wells.length < (this.campaignStage?.wells ?? this.roundTuning?.wells ?? CONFIG.arena.wells) && tries < 400; tries++) {
       const p = this.randomPoint(0.78, 0.3)
       const r = 14 + this.random() * 5
       if (clearOf(p.x, p.z, r + 12)) this.wells.push({ x: p.x, z: p.z, r })
     }
-    for (let tries = 0; this.gates.length < (this.roundTuning?.gates ?? CONFIG.arena.gates) && tries < 400; tries++) {
+    for (let tries = 0; this.gates.length < (this.campaignStage?.gates ?? this.roundTuning?.gates ?? CONFIG.arena.gates) && tries < 400; tries++) {
       const p = this.randomPoint(0.86, 0.22)
       const half = 7 + this.random() * 5
       // Orient gates roughly tangentially so they cut across common paths.
@@ -314,7 +326,7 @@ export class Sim {
       }
       if (clearOf(g.ax, g.az, 10) && clearOf(g.bx, g.bz, 10) && clearOf(p.x, p.z, 10)) this.gates.push(g)
     }
-    for (let tries = 0; this.asteroids.length < (this.roundTuning?.asteroids ?? CONFIG.arena.asteroids) && tries < 800; tries++) {
+    for (let tries = 0; this.asteroids.length < (this.campaignStage?.asteroids ?? this.roundTuning?.asteroids ?? CONFIG.arena.asteroids) && tries < 800; tries++) {
       const p = this.randomPoint(0.92, 0.14)
       const r = 2.4 + this.random() * 3.4
       if (clearOf(p.x, p.z, r + 7) && Math.hypot(p.x, p.z) < R - r - 6) this.asteroids.push({ x: p.x, z: p.z, r, seed: this.random() * 1000 })
@@ -366,7 +378,8 @@ export class Sim {
   spawnWorm(w: Worm): void {
     const p = this.safeSpawnPoint(w.team)
     const toCenter = Math.atan2(-p.z, -p.x) + (this.random() - 0.5) * 1.2
-    const start = CONFIG.worm.startLength + (w.isPlayer ? 0 : Math.floor(this.random() * 26))
+    const startBase = this.campaignStage?.startLength ?? CONFIG.worm.startLength
+    const start = startBase + (w.isPlayer ? 0 : Math.floor(this.random() * 26))
     w.alive = true
     w.mass = start
     w.radius = radiusForLength(start)
@@ -584,6 +597,7 @@ export class Sim {
     this.driftCelestials(dt)
     this.maintain(dt)
     this.updateStage()
+    this.checkCampaignClear()
   }
 
   /**
@@ -593,7 +607,7 @@ export class Sim {
   private updateStage(): void {
     const next = this.stageThresholds.reduce((current, threshold, index) =>
       this.player.xs.length >= threshold ? index + 1 : current, 1)
-    if (next <= this.stage) return
+    if (this.campaignStage || next <= this.stage) return
     this.stage = next
     this.baseRadius = CONFIG.arena.radius + (this.stage - 1) * 30
     this.refreshRadius()
@@ -608,6 +622,18 @@ export class Sim {
 
   nextStageLength(): number | null {
     return this.stage < this.stageThresholds.length ? this.stageThresholds[this.stage] : null
+  }
+
+  campaignProgress(): CampaignStats | null {
+    return this.campaignStage ? campaignStatsFromWorm(this.player, this.time) : null
+  }
+
+  private checkCampaignClear(): void {
+    if (!this.campaignStage || this.campaignCleared || !this.player.alive) return
+    const stats = campaignStatsFromWorm(this.player, this.time)
+    if (!campaignGoalComplete(this.campaignStage, stats)) return
+    this.campaignCleared = true
+    this.events.push({ type: 'campaignClear', stage: this.campaignStage, stats })
   }
 
   private rebuildGrid(): void {
@@ -652,7 +678,7 @@ export class Sim {
     }
 
     // Speed and gravity wells
-    let speed = (w.boosting ? CONFIG.worm.boostSpeed * (w.freeBoost > 0 ? 1.08 : 1) : CONFIG.worm.baseSpeed) * fx.speed
+    let speed = (w.boosting ? CONFIG.worm.boostSpeed * (w.freeBoost > 0 ? 1.08 : 1) : CONFIG.worm.baseSpeed) * fx.speed * (this.campaignStage?.speed ?? 1)
     let hx = w.xs[0]
     let hz = w.zs[0]
     w.slowed = w.traps.slow > 0
@@ -1103,20 +1129,20 @@ export class Sim {
   private maintain(dt: number): void {
     let orbCount = 0
     for (const o of this.orbs) if (o.alive) orbCount++
-    for (let i = 0; i < 8 && orbCount < (this.roundTuning?.food ?? CONFIG.arena.food); i++, orbCount++) this.spawnOrb()
+    for (let i = 0; i < 8 && orbCount < ((this.campaignStage?.food ?? this.roundTuning?.food ?? CONFIG.arena.food)); i++, orbCount++) this.spawnOrb()
     if (this.orbs.length > 1600) this.orbs = this.orbs.filter(o => o.alive)
     const shards = this.shards.filter(s => s.alive)
     if (shards.length !== this.shards.length) this.shards = shards
-    if (this.shards.length < (this.roundTuning?.stardust ?? CONFIG.arena.stardust) && this.random() < dt * 0.8) this.spawnShard()
+    if (this.shards.length < ((this.campaignStage?.stardust ?? this.roundTuning?.stardust ?? CONFIG.arena.stardust)) && this.random() < dt * 0.8) this.spawnShard()
     this.pickups = this.pickups.filter(p => p.alive)
     this.spawnTimers.pickup -= dt
-    if (this.pickups.length < (this.roundTuning?.pickups ?? CONFIG.arena.pickups) && this.spawnTimers.pickup <= 0) {
+    if (this.pickups.length < ((this.campaignStage?.pickups ?? this.roundTuning?.pickups ?? CONFIG.arena.pickups)) && this.spawnTimers.pickup <= 0) {
       this.spawnTimers.pickup = 2.5
       this.spawnPickup()
     }
     this.celestials = this.celestials.filter(c => c.alive)
     this.spawnTimers.celestial -= dt
-    if (this.celestials.length < (this.roundTuning?.celestials ?? CONFIG.arena.celestials) && this.spawnTimers.celestial <= 0) {
+    if (this.celestials.length < ((this.campaignStage?.celestials ?? this.roundTuning?.celestials ?? CONFIG.arena.celestials)) && this.spawnTimers.celestial <= 0) {
       this.spawnTimers.celestial = 3
       this.spawnCelestial()
     }

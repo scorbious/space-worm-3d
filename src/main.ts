@@ -5,10 +5,11 @@ import { Audio } from './engine/audio'
 import { I18n, resolveLocale } from './engine/i18n'
 import { Input } from './engine/input'
 import { GameLoop } from './engine/loop'
-import { purchaseSkin, SAVE_KEY, SaveStore, type SaveData } from './engine/save'
+import { CampaignStore, purchaseSkin, SAVE_KEY, SaveStore, type SaveData } from './engine/save'
 import type { Game, LifeResult } from './game/game'
 import type { HintId } from './game/threats'
 import { applyLife, insertLife, stardustForLife, type CompetitiveRound, type Mode } from './game/rules'
+import { campaignStage, completeCampaignStage, type CampaignStage, type CampaignStats } from './game/campaign'
 import { tuning } from './game/tuning'
 import { TouchControls } from './ui/touch'
 import { Ui } from './ui/ui'
@@ -18,12 +19,14 @@ async function boot(): Promise<void> {
   const canvas = document.querySelector<HTMLCanvasElement>('#game')!
   const firstRun = safeGet(SAVE_KEY) === null
   const save = new SaveStore()
+  const campaign = new CampaignStore()
   const i18n = new I18n(resolveLocale(save.data.locale, navigator.languages))
   const input = new Input(canvas)
   const audio = new Audio()
   let game: Game | undefined
   let match = { bestLife: 0, earned: 0 }
   let deathTimer = 0
+  let activeCampaign: CampaignStage | null = null
 
   if (firstRun) save.update({ reducedMotion: matchMedia('(prefers-reduced-motion: reduce)').matches })
 
@@ -48,32 +51,38 @@ async function boot(): Promise<void> {
   window.addEventListener('keydown', unlockAudio, { once: true })
 
   let starting = false
-  const play = async (mode: Mode, round?: CompetitiveRound) => {
+  const launch = async (mode: Mode, round?: CompetitiveRound, mission?: CampaignStage) => {
     if (!game || starting) return
     network?.leave()
     ui.clearMultiplayer()
     unlockAudio()
     window.clearTimeout(deathTimer)
-    // The arena needs stage 1 (backdrop, core textures, SFX). Usually it has streamed in while
-    // the player was on the title; if not, show a recoverable loading gate.
     if (!assets.stageReady(1)) {
       starting = true
       const gate = ui.showLoading(() => assets.progress(1).ratio)
       const result = await Promise.race([assets.ensure(1).then(() => 'ready' as const), gate.choice])
       gate.done()
       starting = false
-      if (result === 'cancel') {
-        ui.show('title')
-        return
-      }
+      if (result === 'cancel') { ui.show('title'); return }
     }
     tuning.activate('run')
     match = { bestLife: 0, earned: 0 }
-    game.start(mode, round)
+    activeCampaign = mission ?? null
+    game.start(mode, round, mission)
     audio.setScene('arena')
     audio.play('start')
     ui.show('hud')
+    if (mission) {
+      ui.callout('callout.campaignStage', { n: mission.id }, 2)
+      ui.toast('toast.campaignStart', { n: mission.id }, 'power')
+    }
     loop.resetAccumulator()
+  }
+  const play = async (mode: Mode, round?: CompetitiveRound) => launch(mode, round)
+  const startCampaign = async (stageId: number) => {
+    const mission = campaignStage(stageId)
+    if (!mission || mission.id > campaign.data.unlockedStage) return
+    await launch('ffa', undefined, mission)
   }
   const pause = () => {
     if (!game || (game.mode !== 'playing' && !(game.mode === 'dead' && game.sim.mode === 'team'))) return
@@ -87,7 +96,7 @@ async function boot(): Promise<void> {
     loop.resetAccumulator()
   }
 
-  const ui = new Ui(i18n, save, audio, {
+  const ui = new Ui(i18n, save, campaign, audio, {
     play,
     respawn: () => {
       if (!game) return
@@ -101,6 +110,7 @@ async function boot(): Promise<void> {
       window.clearTimeout(deathTimer)
       network?.leave()
       ui.clearMultiplayer()
+      activeCampaign = null
       game?.toTitle()
       audio.setScene('title')
       ui.show('title')
@@ -119,6 +129,11 @@ async function boot(): Promise<void> {
       return true
     },
     equipSkin: id => save.update({ skin: id }),
+    campaign: (action, stageId) => {
+      if (action === 'open') ui.show('campaign')
+      else if (action === 'start' && stageId) void startCampaign(Number(stageId))
+      else if (action === 'next' && stageId) void startCampaign(Number(stageId))
+    },
     resetHints: () => {
       save.update({ seenHints: [] })
       game?.seenHints.clear()
@@ -227,7 +242,10 @@ async function boot(): Promise<void> {
       match.bestLife = Math.max(match.bestLife, result.peakLength)
       match.earned += info.earned
       const death = { result, earned: info.earned, newBest: info.newBest, localRank: info.localRank }
-      if (!result.final && result.mode === 'ffa') {
+      if (activeCampaign && !result.final) {
+        const stats: CampaignStats = { length: result.finalLength, peak: result.peakLength, kills: result.kills, stars: result.shards, seconds: result.seconds }
+        ui.showCampaignResult(false, activeCampaign, stats, 0, campaign.data.unlockedStage)
+      } else if (!result.final && result.mode === 'ffa') {
         deathTimer = window.setTimeout(() => ui.showDeath(death), 1100)
       } else if (!result.final) {
         ui.showDeath(death)
@@ -241,6 +259,12 @@ async function boot(): Promise<void> {
         audio.setScene('results')
         ui.showMatch(result, match.bestLife, match.earned)
       }, 1300)
+    },
+    campaignClear: (stage, stats) => {
+      const completed = completeCampaignStage(campaign.data, stage, stats)
+      campaign.replace(completed.data)
+      if (completed.newlyCompleted) save.update({ stardust: save.data.stardust + stage.reward })
+      ui.showCampaignResult(true, stage, stats, completed.newlyCompleted ? stage.reward : 0, completed.unlockedStage)
     },
     toast: (key, vars, tone) => ui.toast(key, vars, tone),
     celestial: (kind, added) => ui.celestial(kind, added),

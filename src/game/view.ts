@@ -628,9 +628,9 @@ export class View {
       if (!w.alive) continue
       const skin = appearanceSkin(w.skin, w.color)
       const len = w.xs.length
-      const tier = armorTier(len, w.radius)
+      const tier = armorTier(len, w.radius, sim.stage)
       const growth = ARMOR_PROFILES[tier]
-      const material = growthMaterial(len, w.radius)
+      const material = growthMaterial(len, w.radius, sim.stage)
       const palette = growthSkinPalette(skin, material)
       const band = Math.max(1, Math.round(skin.band * growth.band))
       armorColor.setHex(material.tint).lerp(tmpColor.setHex(skin.head), 0.16)
@@ -737,9 +737,9 @@ export class View {
     h.group.visible = visible
     if (!visible) return
     const r = w.radius
-    const tier = armorTier(w.xs.length, r)
+    const tier = armorTier(w.xs.length, r, this.sim?.stage ?? 1)
     const growth = ARMOR_PROFILES[tier]
-    const material = growthMaterial(w.xs.length, r)
+    const material = growthMaterial(w.xs.length, r, this.sim?.stage ?? 1)
     const palette = growthSkinPalette(skin, material)
     const R = r * 1.18 * growth.scale
     const face = HEAD_FEATURES[w.headStyle]

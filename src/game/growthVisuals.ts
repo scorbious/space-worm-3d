@@ -1,9 +1,14 @@
 /** Cosmetic only. Radius gates stop temporary shrink from wearing oversized heavy armor. */
 export type ArmorTier = 0 | 1 | 2 | 3
-export function armorTier(length: number, radius: number): ArmorTier {
+export function armorTier(length: number, radius: number, progressionStage = 1): ArmorTier {
   const byLength = length >= 260 ? 3 : length >= 130 ? 2 : length >= 60 ? 1 : 0
   const byRadius = radius >= 1.75 ? 3 : radius >= 1.4 ? 2 : radius >= 1.08 ? 1 : 0
-  return Math.min(byLength, byRadius) as ArmorTier
+  // Campaign stages grant a visible evolution layer while ordinary runs keep the original gates.
+  const stage = Number.isFinite(progressionStage) ? Math.max(1, Math.floor(progressionStage)) : 1
+  const byStage = Math.min(3, Math.ceil((stage - 1) / 2))
+  const baseTier = Math.min(byLength, byRadius)
+  const campaignTier = stage > 1 ? Math.min(3, Math.max(baseTier, byRadius + byStage)) : baseTier
+  return campaignTier as ArmorTier
 }
 
 export const ARMOR_PROFILES = [
@@ -22,14 +27,15 @@ export function mixSkinColor(a: number, b: number, amount: number): number {
 }
 
 /** Fade INTO each threshold, gated by radius too; a temporary shrink smoothly loses its tint. */
-export function growthMaterial(length: number, radius: number) {
-  const bronze = Math.min(smooth(length, 40, 60), smooth(radius, 0.98, 1.08))
-  const gold = Math.min(smooth(length, 100, 130), smooth(radius, 1.28, 1.4))
-  const purple = Math.min(smooth(length, 210, 260), smooth(radius, 1.62, 1.75))
+export function growthMaterial(length: number, radius: number, progressionStage = 1) {
+  const stage = Number.isFinite(progressionStage) ? Math.max(1, Math.floor(progressionStage)) : 1
+  const bronze = Math.max(stage >= 2 ? 1 : 0, Math.min(smooth(length, 40, 60), smooth(radius, 0.98, 1.08)))
+  const gold = Math.max(stage >= 4 ? 1 : 0, Math.min(smooth(length, 100, 130), smooth(radius, 1.28, 1.4)))
+  const purple = Math.max(stage >= 6 ? 1 : 0, Math.min(smooth(length, 210, 260), smooth(radius, 1.62, 1.75)))
   const tint = mixSkinColor(mixSkinColor(0xb85a22, 0xffc62e, gold), 0x8f3edd, purple)
   const trim = mixSkinColor(mixSkinColor(0xffc18a, 0xffeb94, gold), 0xe4b0ff, purple)
   return {
-    tier: armorTier(length, radius), phase: purple >= 1 ? 'purple' : gold >= 1 ? 'gold' : bronze > 0 ? 'bronze' : 'base',
+    tier: armorTier(length, radius, progressionStage), phase: purple >= 1 ? 'purple' : gold >= 1 ? 'gold' : bronze > 0 ? 'bronze' : 'base',
     tint, trim, blend: bronze * (0.8 + gold * 0.08 + purple * 0.01),
     metalness: bronze * (0.45 + gold * 0.18 + purple * 0.22),
     roughness: 0.42 - bronze * 0.12 - gold * 0.08 - purple * 0.05,
