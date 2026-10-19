@@ -798,8 +798,11 @@ body.reduced-motion .tarrow.urgent .chev::before { animation: none; box-shadow: 
 .ability-ghost { --c: #b9a8ff; }
 .ability-electric { --c: #63e7ff; }
 .ability-bomb { --c: #ff805e; }
+.ability-laser { --c: #ff4d62; }
 .ability-btn:disabled { opacity: .32; filter: saturate(.4); cursor: not-allowed; }
 .ability-btn.is-active { border-color: var(--c); box-shadow: 0 0 14px color-mix(in srgb, var(--c) 35%, transparent); animation: ability-pulse 1s ease-in-out infinite alternate; }
+.ability-btn.is-cooldown { border-color: color-mix(in srgb, var(--c) 45%, var(--line)); }
+.ability-btn.is-used { border-color: rgba(255,255,255,.18); filter: grayscale(.45); }
 .ability-btn.is-ending { animation: blink .45s steps(2, jump-none) infinite; }
 @keyframes ability-pulse { from { background: rgba(255,255,255,.06); } to { background: color-mix(in srgb, var(--c) 17%, rgba(10,8,28,.8)); } }
 @media (max-width: 620px) {

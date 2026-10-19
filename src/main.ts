@@ -5,7 +5,7 @@ import { Audio } from './engine/audio'
 import { I18n, resolveLocale } from './engine/i18n'
 import { Input } from './engine/input'
 import { GameLoop } from './engine/loop'
-import { CampaignStore, purchaseSkin, purchaseUpgrade, SAVE_KEY, SaveStore, type SaveData } from './engine/save'
+import { CampaignStore, purchaseLaser, purchaseSkin, purchaseUpgrade, SAVE_KEY, SaveStore, type SaveData } from './engine/save'
 import type { Game, LifeResult } from './game/game'
 import type { HintId } from './game/threats'
 import { applyLife, insertLife, stardustForLife, type CompetitiveRound, type Mode } from './game/rules'
@@ -130,6 +130,12 @@ async function boot(): Promise<void> {
     },
     buyUpgrade: id => {
       const next = purchaseUpgrade(save.data, id)
+      if (!next) return false
+      save.replace(next)
+      return true
+    },
+    buyLaser: () => {
+      const next = purchaseLaser(save.data)
       if (!next) return false
       save.replace(next)
       return true
@@ -284,7 +290,7 @@ async function boot(): Promise<void> {
       if (!save.data.seenHints.includes(id)) save.update({ seenHints: [...save.data.seenHints, id] })
       ui.showHint(id)
     },
-  }, () => ({ name: save.data.playerName, skin: save.data.skin, color: save.data.color, headStyle: save.data.headStyle, upgrades: save.data.upgrades }))
+  }, () => ({ name: save.data.playerName, skin: save.data.skin, color: save.data.color, headStyle: save.data.headStyle, upgrades: save.data.upgrades, laserUnlocked: save.data.laserUnlocked }))
   game.reducedMotion = save.data.reducedMotion
   game.threatMode = save.data.threatMode
   game.setQuality(save.data.quality)

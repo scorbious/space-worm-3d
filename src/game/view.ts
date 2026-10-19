@@ -52,11 +52,14 @@ type HeadView = {
   label: THREE.Sprite
   labelKey: string
   crown: THREE.Sprite
+  ghostShell: THREE.Mesh
   skin: string
   blinkAt: number
 }
 type FreeCelestialView = { visual: CelestialVisual; ring: THREE.Mesh; label: THREE.Sprite; edible: boolean | null }
 type GateView = { mat: THREE.ShaderMaterial; tips: THREE.MeshBasicMaterial[]; ax: number; az: number; bx: number; bz: number }
+type ElectricView = { group: THREE.Group; lines: THREE.Line[] }
+type BombView = { group: THREE.Group; core: THREE.Mesh; halo: THREE.Mesh; ring: THREE.Mesh; timer: THREE.Sprite }
 
 const MAX_SEGMENTS = 9000
 const MAX_ORBS = 1800
@@ -90,6 +93,7 @@ export class View {
   private sim: Sim | null = null
   private hazards = new THREE.Group()
   private body: THREE.InstancedMesh
+  private ghostBody: THREE.InstancedMesh
   private bodyArmor: THREE.InstancedMesh
   private orbs: THREE.InstancedMesh
   private fruitLeaves: THREE.InstancedMesh
@@ -101,6 +105,8 @@ export class View {
   private freeCel = new Map<number, FreeCelestialView>()
   private pickups = new Map<number, THREE.Group>()
   private specials = new Map<number, THREE.Group>()
+  private bombs = new Map<number, BombView>()
+  private electric = new Map<number, ElectricView>()
   private gates: GateView[] = []
   private wellMats: THREE.ShaderMaterial[] = []
   private asteroidMeshes: THREE.Mesh[] = []
@@ -140,6 +146,17 @@ export class View {
     this.body.frustumCulled = false
     this.body.count = 0
     this.scene.add(this.body)
+
+    this.ghostBody = new THREE.InstancedMesh(
+      new THREE.SphereGeometry(1, 18, 12),
+      new THREE.MeshBasicMaterial({ color: 0xbffaff, transparent: true, opacity: 0.22, blending: THREE.AdditiveBlending, depthWrite: false }),
+      MAX_SEGMENTS,
+    )
+    this.ghostBody.instanceMatrix.setUsage(THREE.DynamicDrawUsage)
+    this.ghostBody.frustumCulled = false
+    this.ghostBody.count = 0
+    this.ghostBody.renderOrder = 2
+    this.scene.add(this.ghostBody)
 
     this.bodyArmor = new THREE.InstancedMesh(bodyArmorGeometry(), new THREE.MeshStandardMaterial({ roughness: 0.34, metalness: 0.65, side: THREE.DoubleSide }), MAX_BODY_ARMOR)
     this.bodyArmor.instanceMatrix.setUsage(THREE.DynamicDrawUsage)
@@ -209,19 +226,11 @@ export class View {
       uniforms: { uR: { value: R }, uTime: { value: 0 } },
       vertexShader: 'varying vec2 vP; void main(){ vP = position.xy; gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0); }',
       fragmentShader: `uniform float uR; uniform float uTime; varying vec2 vP;
-        float hex(vec2 p){ p = abs(p); return max(dot(p, normalize(vec2(1.0,1.732))), p.x); }
         void main(){
-          vec2 p = vP / 9.0;
-          vec2 a = mod(p, vec2(1.0,1.732)) - vec2(0.5,0.866);
-          vec2 b = mod(p + vec2(0.5,0.866), vec2(1.0,1.732)) - vec2(0.5,0.866);
-          vec2 g = dot(a,a) < dot(b,b) ? a : b;
-          float edge = smoothstep(0.482, 0.5, hex(g));
-          float d = length(vP) / uR;
-          float pulse = 0.5 + 0.5 * sin(d * 18.0 - uTime * 0.8);
-          vec3 base = mix(vec3(0.02,0.018,0.06), vec3(0.05,0.015,0.06), smoothstep(0.6,1.0,d));
-          vec3 line = mix(vec3(0.2,0.24,0.55), vec3(0.6,0.16,0.42), smoothstep(0.75,1.0,d));
-          float alpha = 0.4 + edge * 0.06 + smoothstep(0.85, 1.0, d) * 0.3;
-          gl_FragColor = vec4(base + line * edge * (0.12 + 0.06 * pulse + 0.14 * d), alpha);
+          float d = clamp(length(vP) / uR, 0.0, 1.4);
+          float edge = smoothstep(0.55, 1.0, d);
+          vec3 base = mix(vec3(0.018,0.016,0.05), vec3(0.055,0.018,0.065), edge);
+          gl_FragColor = vec4(base + vec3(0.025,0.02,0.08) * (1.0 - d), 0.52 + edge * 0.22);
         }`,
       transparent: true, depthWrite: false,
     })
@@ -235,10 +244,11 @@ export class View {
       uniforms: { uTime: { value: 0 } },
       vertexShader: 'varying vec2 vUv; void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0); }',
       fragmentShader: `uniform float uTime; varying vec2 vUv;
-        void main(){ float stripe = 0.55 + 0.45 * sin(vUv.x * 900.0 + vUv.y * 6.0 - uTime * 3.0);
+        void main(){
           float fade = pow(1.0 - vUv.y, 2.2);
-          vec3 c = mix(vec3(1.0,0.2,0.55), vec3(1.0,0.55,0.3), vUv.y);
-          gl_FragColor = vec4(c * 0.95, fade * (0.4 + 0.25 * stripe)); }`,
+          vec3 c = mix(vec3(0.42,0.08,0.28), vec3(0.95,0.3,0.32), vUv.y);
+          gl_FragColor = vec4(c * 0.72, fade * 0.48);
+        }`,
       transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, side: THREE.DoubleSide,
     })
     this.arenaWall = new THREE.Mesh(new THREE.CylinderGeometry(R, R, 9, 200, 1, true), this.wallMat)
@@ -290,6 +300,21 @@ export class View {
     this.pickups.clear()
     for (const s of this.specials.values()) { this.scene.remove(s); disposeSpecial(s) }
     this.specials.clear()
+    for (const bomb of this.bombs.values()) {
+      this.scene.remove(bomb.group)
+      bomb.group.traverse(object => {
+        const mesh = object as THREE.Mesh | THREE.Sprite
+        if (mesh.material) {
+          for (const material of Array.isArray(mesh.material) ? mesh.material : [mesh.material]) material.dispose()
+        }
+      })
+    }
+    this.bombs.clear()
+    for (const arc of this.electric.values()) {
+      this.scene.remove(arc.group)
+      for (const line of arc.lines) { line.geometry.dispose(); (line.material as THREE.Material).dispose() }
+    }
+    this.electric.clear()
     for (const pool of this.celSegPool.values()) for (const v of pool) v.visible = false
     this.particles.clear()
     this.fx.clear()
@@ -576,6 +601,54 @@ export class View {
       this.specials.delete(id)
     }
 
+    // Bombs are world-space objects: the group is never parented to a worm. The core, halo and
+    // billboard timer make even a short-lived bomb legible from the camera.
+    const seenBombs = new Set<number>()
+    for (const b of sim.bombs) {
+      if (!b.alive) continue
+      seenBombs.add(b.id)
+      let v = this.bombs.get(b.id)
+      if (!v) {
+        const group = new THREE.Group()
+        const core = new THREE.Mesh(new THREE.SphereGeometry(1, 16, 10), new THREE.MeshStandardMaterial({ color: 0x31101a, emissive: 0xff283d, emissiveIntensity: 1.5, roughness: 0.28, metalness: 0.5 }))
+        const halo = new THREE.Mesh(new THREE.SphereGeometry(1, 16, 10), new THREE.MeshBasicMaterial({ color: 0xff304c, transparent: true, opacity: 0.16, blending: THREE.AdditiveBlending, depthWrite: false }))
+        const ring = new THREE.Mesh(new THREE.TorusGeometry(1.55, 0.1, 8, 32), new THREE.MeshBasicMaterial({ color: 0xffd34f, transparent: true, opacity: 0.86, depthWrite: false }))
+        ring.rotation.x = -Math.PI / 2
+        const timer = makeLabel('', '#fff0a8', 1.5)
+        timer.name = 'timer'
+        timer.position.y = 2.8
+        group.add(halo, core, ring, timer)
+        group.renderOrder = 5
+        v = { group, core, halo, ring, timer }
+        this.bombs.set(b.id, v)
+        this.hazards.add(group)
+      }
+      const left = Math.max(0, b.expiresAt - sim.time)
+      const pulse = calm ? 1 : 1 + 0.12 * Math.sin(t * 8 + b.id)
+      v.group.visible = !cull(b.x, b.z, 6)
+      v.group.position.set(b.x, 0.15, b.z)
+      v.core.scale.setScalar(1.15 * pulse)
+      v.halo.scale.setScalar(3.3 * pulse)
+      v.ring.scale.setScalar(1.15 + (calm ? 0 : 0.13 * Math.sin(t * 5 + b.id)))
+      v.ring.rotation.z = calm ? 0 : t * 1.5
+      const secs = Math.ceil(left)
+      if (v.group.userData.seconds !== secs) {
+        v.group.userData.seconds = secs
+        const mat = v.timer.material as THREE.SpriteMaterial
+        mat.map = labelTexture(String(secs), secs <= 2 ? '#ff6b8a' : '#fff0a8')
+        v.timer.scale.set(1.5 * (mat.map.userData.aspect as number), 1.5, 1)
+        mat.needsUpdate = true
+      }
+    }
+    for (const [id, v] of this.bombs) if (!seenBombs.has(id)) {
+      this.hazards.remove(v.group)
+      v.group.traverse(object => {
+        const mesh = object as THREE.Mesh | THREE.Sprite
+        if (mesh.material) for (const material of Array.isArray(mesh.material) ? mesh.material : [mesh.material]) material.dispose()
+      })
+      this.bombs.delete(id)
+    }
+
     // Free celestials
     const seenCel = new Set<number>()
     for (const c of sim.celestials) {
@@ -621,6 +694,7 @@ export class View {
     // Worms
     const segUsed = new Map<CelestialId, number>()
     n = 0
+    let ghostN = 0
     let plates = 0
     let visibleWorms = 0
     const seenHeads = new Set<number>()
@@ -682,6 +756,11 @@ export class View {
         const s = w.radius * tailK * wave * bump
         tmpMat.makeScale(s, s * 0.92, s).setPosition(x, 0, z)
         this.body.setMatrixAt(n, tmpMat)
+        if (w.ghostLeft > 0 && ghostN < MAX_SEGMENTS) {
+          const ghostScale = 1.05 + (calm ? 0 : 0.035 * Math.sin(t * 7 - i * 0.4))
+          tmpMat.makeScale(s * ghostScale, s * 0.96 * ghostScale, s * ghostScale).setPosition(x, 0.16, z)
+          this.ghostBody.setMatrixAt(ghostN++, tmpMat)
+        }
         this.bodyMetal.setX(n, material.metalness)
         tmpColor.setHex(palette.colors[Math.floor(i / band) % palette.colors.length])
         if (tier > 0 && i % band === 0) tmpColor.lerp(trimColor, 0.5)
@@ -699,6 +778,7 @@ export class View {
       }
       seenHeads.add(w.id)
       this.updateHead(w, skin, sim.mode === 'team', t, calm, dim, headVisible, sim.crownId === w.id, dt, this.threats?.rivals.get(w.id))
+      this.updateElectric(w, t, calm, headVisible)
       if (w.boosting && !cull(w.xs[len - 1], w.zs[len - 1], 4) && Math.random() < (w.freeBoost > 0 ? 0.95 : 0.6)) {
         const tl = len - 1
         const heading = Math.atan2(w.zs[Math.max(0, tl - 1)] - w.zs[tl], w.xs[Math.max(0, tl - 1)] - w.xs[tl])
@@ -711,6 +791,8 @@ export class View {
     this.body.instanceMatrix.needsUpdate = true
     this.bodyMetal.needsUpdate = true
     if (this.body.instanceColor) this.body.instanceColor.needsUpdate = true
+    this.ghostBody.count = ghostN
+    this.ghostBody.instanceMatrix.needsUpdate = true
     this.bodyArmor.count = plates
     this.bodyArmor.instanceMatrix.needsUpdate = true
     if (this.bodyArmor.instanceColor) this.bodyArmor.instanceColor.needsUpdate = true
@@ -723,6 +805,57 @@ export class View {
     }
     this.particles.update(dt)
     this.fx.update(dt)
+  }
+
+  /** Draw a bright, animated yellow arc network along the active worm, not just a material tint. */
+  private updateElectric(w: Worm, t: number, calm: boolean, visible: boolean): void {
+    let effect = this.electric.get(w.id)
+    if (!effect) {
+      const group = new THREE.Group()
+      group.renderOrder = 6
+      const lines = Array.from({ length: 4 }, (_, lane) => {
+        const material = new THREE.LineBasicMaterial({
+          color: lane % 2 ? 0xffff9a : 0xffdf24,
+          transparent: true,
+          opacity: 0.95,
+          blending: THREE.AdditiveBlending,
+          depthWrite: false,
+        })
+        const line = new THREE.Line(new THREE.BufferGeometry(), material)
+        line.frustumCulled = false
+        group.add(line)
+        return line
+      })
+      effect = { group, lines }
+      this.electric.set(w.id, effect)
+      this.scene.add(group)
+    }
+    const active = visible && w.electricLeft > 0 && w.xs.length > 1
+    effect.group.visible = active
+    if (!active) return
+    const samples = Math.min(30, Math.max(6, Math.floor(w.xs.length / 2)))
+    for (let lane = 0; lane < effect.lines.length; lane++) {
+      const points: THREE.Vector3[] = []
+      const phase = w.id * 0.71 + lane * 1.8
+      for (let i = 0; i < samples; i++) {
+        const index = Math.min(w.xs.length - 1, Math.floor(i / (samples - 1) * (w.xs.length - 1)))
+        const prev = Math.max(0, index - 1)
+        const next = Math.min(w.xs.length - 1, index + 1)
+        const dx = w.xs[next] - w.xs[prev]
+        const dz = w.zs[next] - w.zs[prev]
+        const length = Math.hypot(dx, dz) || 1
+        const nx = -dz / length
+        const nz = dx / length
+        const jitter = calm ? 0 : Math.sin(t * 22 + phase + i * 2.7) * w.radius * (0.22 + lane * 0.045)
+        const forward = calm ? 0 : Math.sin(t * 15 + phase * 1.7 + i * 1.1) * w.radius * 0.12
+        points.push(new THREE.Vector3(w.xs[index] + nx * jitter + dx / length * forward, 0.58 + lane * 0.07, w.zs[index] + nz * jitter + dz / length * forward))
+      }
+      const line = effect.lines[lane]
+      line.geometry.setFromPoints(points)
+      const material = line.material as THREE.LineBasicMaterial
+      material.opacity = calm ? 0.62 : 0.7 + 0.3 * (0.5 + 0.5 * Math.sin(t * 18 + phase))
+      material.color.setHex(lane % 2 ? 0xffffa6 : 0xffff21)
+    }
   }
 
   private updateHead(w: Worm, skin: Skin, team: boolean, t: number, calm: boolean, dim: number, visible: boolean, crowned: boolean, dt: number, threat?: RivalThreat): void {
@@ -751,7 +884,9 @@ export class View {
     h.mouthOpen = easeMouth(h.mouthOpen, Math.max(appetite, expression.open), dt)
     const gulp = 1 + (calm ? 0 : expression.pulse * 0.1)
     h.head.scale.set(R * gulp, R * 0.94 * gulp, R * gulp)
-    h.headMat.uniforms.uColor.value.setHex(palette.head).multiplyScalar(w.boosting ? 1.25 : 1)
+    const headColor = tmpColor.setHex(palette.head)
+    if (w.electricLeft > 0) headColor.lerp(tmpColor.setHex(0xffe52b), 0.58)
+    h.headMat.uniforms.uColor.value.copy(headColor).multiplyScalar(w.boosting ? 1.25 : 1)
     h.headMat.uniforms.uOpacity.value = dim < 1 ? 0.55 + dim * 0.45 : 1
     h.headMat.uniforms.uSolid.value = Math.max(w.headStyle === 'robot' ? 0.7 : 0, growth.solid)
     h.headMat.uniforms.uMetal.value = material.metalness
@@ -818,6 +953,14 @@ export class View {
     }
     h.boostGlow.visible = w.boosting
     h.boostGlow.scale.setScalar(r * (w.freeBoost > 0 ? 7 : 5))
+    h.ghostShell.visible = w.ghostLeft > 0
+    if (h.ghostShell.visible) {
+      h.ghostShell.scale.set(R * 1.58, R * 1.48, R * 1.58)
+      h.ghostShell.rotation.y = calm ? 0 : t * 0.9
+      const ghostMat = h.ghostShell.material as THREE.MeshPhysicalMaterial
+      ghostMat.opacity = calm ? 0.2 : 0.16 + 0.08 * (0.5 + 0.5 * Math.sin(t * 8))
+      ghostMat.emissiveIntensity = calm ? 0.55 : 0.7 + 0.25 * Math.sin(t * 7)
+    }
     if (!w.isPlayer) this.threatLook(h, w, team, threat, t, calm)
     h.label.visible = !w.isPlayer
     const top = h.head.geometry.boundingBox!.max.y * R * 0.94
@@ -906,6 +1049,21 @@ export class View {
     tongue.name = 'tongue'
     tongue.visible = false
     group.add(tongue)
+    const ghostShell = new THREE.Mesh(new THREE.SphereGeometry(1, 24, 16), new THREE.MeshPhysicalMaterial({
+      color: 0xbffcff,
+      emissive: 0x2cceff,
+      emissiveIntensity: 0.72,
+      transparent: true,
+      opacity: 0.2,
+      transmission: 0.45,
+      roughness: 0.04,
+      metalness: 0.08,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+    }))
+    ghostShell.visible = false
+    ghostShell.renderOrder = 4
+    group.add(ghostShell)
     const haloColor = team && w.team >= 0 ? TEAM_COLORS[w.team] : w.isPlayer ? 0xffffff : skin.colors[0]
     const halo = new THREE.Mesh(new THREE.RingGeometry(0.95, 1.18, 40), new THREE.MeshBasicMaterial({ color: new THREE.Color(haloColor).multiplyScalar(team ? 1.1 : 0.9), transparent: true, opacity: team || w.isPlayer ? 0.6 : 0.25, side: THREE.DoubleSide, depthWrite: false }))
     halo.rotation.x = -Math.PI / 2
@@ -935,6 +1093,6 @@ export class View {
     const crown = iconSprite('crown', 3)
     crown.visible = false
     group.add(crown)
-    return { group, head, headMat, armor, armorLayers, armorMat, trimMat, eyes, pupils, mouth, teeth, tongue, mouthOpen: 0, halo, status, shield, shieldMat, magnet, boostGlow, label, labelKey: '', crown, skin: `${skin.id}:${w.color}:${w.headStyle}`, blinkAt: Math.random() * 3 }
+    return { group, head, headMat, armor, armorLayers, armorMat, trimMat, eyes, pupils, mouth, teeth, tongue, mouthOpen: 0, halo, status, shield, shieldMat, magnet, boostGlow, label, labelKey: '', crown, ghostShell, skin: `${skin.id}:${w.color}:${w.headStyle}`, blinkAt: Math.random() * 3 }
   }
 }

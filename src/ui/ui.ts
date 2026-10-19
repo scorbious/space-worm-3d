@@ -18,7 +18,7 @@ import { icon } from './icons'
 import { Minimap } from './minimap'
 import { Sparks } from './sparks'
 import { assets } from '../engine/assets'
-import { UPGRADE_DEFS, nextUpgradePrice } from '../game/upgrades'
+import { LASER_PRICE, UPGRADE_DEFS, nextUpgradePrice } from '../game/upgrades'
 
 export type Screen = 'boot' | 'loading' | 'title' | 'hud' | 'pause' | 'settings' | 'skins' | 'upgrades' | 'records' | 'howto' | 'death' | 'match' | 'multiplayer' | 'campaign' | 'campaignResult'
 
@@ -32,7 +32,8 @@ export type UiActions = {
   buySkin(id: string): boolean
   buyUpgrade(id: UpgradeId): boolean
   equipSkin(id: string): void
-  ability(kind: 'ghost' | 'electric' | 'bomb'): void
+  ability(kind: 'ghost' | 'electric' | 'bomb' | 'laser'): void
+  buyLaser(): boolean
   /** Forget which first-encounter hazard hints were shown. */
   resetHints(): void
   multiplayer(action: string, value?: string): void
@@ -228,6 +229,7 @@ export class Ui {
               <button class="ability-btn ability-ghost" data-action="ability-ghost" data-i18n-title="ability.ghost"><b>G</b><small data-i18n="ability.ghost.short"></small><span></span></button>
               <button class="ability-btn ability-electric" data-action="ability-electric" data-i18n-title="ability.electric"><b>E</b><small data-i18n="ability.electric.short"></small><span></span></button>
               <button class="ability-btn ability-bomb" data-action="ability-bomb" data-i18n-title="ability.bomb"><b>B</b><small data-i18n="ability.bomb.short"></small><span></span></button>
+              <button class="ability-btn ability-laser" data-action="ability-laser" data-i18n-title="ability.laser"><b>L</b><small data-i18n="ability.laser.short"></small><span></span></button>
             </div>
           </div>
         </div>
@@ -383,6 +385,8 @@ export class Ui {
       case 'ability-ghost': return this.actions.ability('ghost')
       case 'ability-electric': return this.actions.ability('electric')
       case 'ability-bomb': return this.actions.ability('bomb')
+      case 'ability-laser': return this.actions.ability('laser')
+      case 'buy-laser': return this.onLaser()
       case 'campaign-start': return this.actions.campaign('start', Number(el.dataset.stage))
       case 'campaign-next': return this.actions.campaign('next', Number(el.dataset.stage))
       case 'campaign-retry': return this.actions.campaign('start', Number(el.dataset.stage))
@@ -494,6 +498,17 @@ export class Ui {
         const r = card.getBoundingClientRect()
         this.sparks.ring(r.left + r.width / 2, r.top + r.height / 2, '#7ff6ff', r.width * 0.65)
       }
+    } else this.audio.play('bump')
+    this.refreshWallet()
+    this.renderUpgrades()
+  }
+
+  private onLaser(): void {
+    if (this.save.data.laserUnlocked) return
+    if (this.actions.buyLaser()) {
+      this.audio.play('buy')
+      this.toast('upgradeLab.laserPurchased', {}, 'good')
+      this.sparks.burstAround(this.root.querySelector('.upgrade-laser') ?? this.root, '#ff4d62', 42)
     } else this.audio.play('bump')
     this.refreshWallet()
     this.renderUpgrades()
@@ -647,7 +662,11 @@ export class Ui {
         <small class="upgrade-status ${affordable || maxed ? '' : 'locked'}">${status}</small>
       </article>`
     }).join('')
-    el.innerHTML = `<header><div><p class="eyebrow">${t('upgradeLab.eyebrow')}</p><h2>${t('upgradeLab.title')}</h2><p class="upgrade-note">${t('upgradeLab.note')}</p></div><div class="wallet">${icon('stardust')}<b>${this.i18n.n(d.stardust)}</b></div></header><div class="upgrade-grid">${cards}</div><footer><button class="btn ghost" data-action="back">${t('common.back')}</button></footer>`
+    const laserOwned = d.laserUnlocked
+    const laserAffordable = !laserOwned && d.stardust >= LASER_PRICE
+    const laserStatus = laserOwned ? t('upgradeLab.laserOwned') : laserAffordable ? t('upgradeLab.laserBuy') : t('upgradeLab.need', { n: this.i18n.n(LASER_PRICE - d.stardust) })
+    const laser = `<article class="upgrade-tile upgrade-laser" style="--c:#ff4d62"><header><span class="upgrade-mark">L</span><div><h3>${t('upgradeLab.laser')}</h3><p>${t('upgradeLab.laserDesc')}</p></div></header><div class="upgrade-level"><span>${t('upgradeLab.oneShot')}</span><i><em style="width:${laserOwned ? 100 : 0}%"></em></i><b>${laserOwned ? '1/1' : '0/1'}</b></div><p class="upgrade-effect">${t('upgradeLab.laserEffect')}</p><button class="btn ${laserAffordable ? 'primary' : 'ghost'}" data-action="buy-laser" ${laserOwned || !laserAffordable ? 'disabled' : ''}>${laserOwned ? t('upgradeLab.laserOwned') : `${icon('stardust')}${t('upgradeLab.buyFor', { n: this.i18n.n(LASER_PRICE) })}`}</button><small class="upgrade-status ${laserAffordable || laserOwned ? '' : 'locked'}">${laserStatus}</small></article>`
+    el.innerHTML = `<header><div><p class="eyebrow">${t('upgradeLab.eyebrow')}</p><h2>${t('upgradeLab.title')}</h2><p class="upgrade-note">${t('upgradeLab.note')} ${t('upgradeLab.laserNote')}</p></div><div class="wallet">${icon('stardust')}<b>${this.i18n.n(d.stardust)}</b></div></header><div class="upgrade-grid">${cards}${laser}</div><footer><button class="btn ghost" data-action="back">${t('common.back')}</button></footer>`
   }
 
   private renderSkins(): void {
@@ -1089,22 +1108,29 @@ export class Ui {
     })
     hud.querySelector('.chip-slow')!.classList.toggle('is-on', h.slowed)
     hud.querySelector('.chip-rim')!.classList.toggle('is-on', h.rimDanger > 0.3)
-    const abilityState: { kind: 'ghost' | 'electric' | 'bomb'; left: number; level: number }[] = [
+    const abilityState: { kind: 'ghost' | 'electric' | 'bomb' | 'laser'; left: number; level: number }[] = [
       { kind: 'ghost', left: h.ghostLeft, level: h.upgradeLevels.ghost },
       { kind: 'electric', left: h.electricLeft, level: h.upgradeLevels.electric },
       { kind: 'bomb', left: h.bombs?.next ?? 0, level: h.upgradeLevels.bomb },
+      { kind: 'laser', left: h.laserUsed ? 0 : h.laserUnlocked ? 1 : 0, level: h.laserUnlocked ? 1 : 0 },
     ]
     for (const ability of abilityState) {
       const button = hud.querySelector<HTMLButtonElement>(`.ability-${ability.kind}`)
       if (!button) continue
       const owned = ability.level > 0
-      button.disabled = !owned
+      const cooldown = ability.kind === 'ghost' ? h.ghostCooldown : 0
+      const laserBlocked = ability.kind === 'laser' && (game.isOnline || h.laserUsed)
+      button.disabled = !owned || cooldown > 0 || laserBlocked
       button.classList.toggle('is-owned', owned)
-      const label = ability.kind === 'bomb'
+      const label = ability.kind === 'laser'
+        ? game.isOnline ? this.t('ability.localOnly') : h.laserUsed ? this.t('ability.used') : this.t('hud.abilityReady')
+        : ability.kind === 'bomb'
         ? h.bombs ? `${h.bombs.left}/${h.bombs.limit}${h.bombs.next > 0 ? ` · ${Math.ceil(h.bombs.next)}s` : ''}` : '—'
-        : ability.left > 0 ? this.t('common.seconds', { n: Math.ceil(ability.left) }) : owned ? this.t('hud.abilityReady') : '—'
+        : ability.left > 0 ? this.t('common.seconds', { n: Math.ceil(ability.left) }) : cooldown > 0 ? this.t('ability.cooldown', { n: Math.ceil(cooldown) }) : owned ? this.t('hud.abilityReady') : '—'
       button.querySelector('span')!.textContent = label
-      button.classList.toggle('is-active', ability.left > 0 && ability.kind !== 'bomb')
+      button.classList.toggle('is-active', ability.left > 0 && ability.kind !== 'bomb' && ability.kind !== 'laser')
+      button.classList.toggle('is-used', ability.kind === 'laser' && h.laserUsed)
+      button.classList.toggle('is-cooldown', cooldown > 0)
       button.classList.toggle('is-ending', ability.left > 0 && ability.left <= 2)
     }
     this.vignetteEl.style.opacity = String(h.rimDanger * 0.85)

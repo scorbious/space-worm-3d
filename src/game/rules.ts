@@ -85,6 +85,16 @@ export function powerEffects(stacks: PowerStacks): PowerEffects {
   }
 }
 
+/** Consecutive magnet pickups add time, with a bounded four-pickup safety cap. */
+export const MAGNET_MAX_SECONDS = CONFIG.pickups.magnet * 4
+export function addChainedDuration(current: number, added: number, cap: number): number {
+  const safeCap = Math.max(0, Number.isFinite(cap) ? cap : 0)
+  return Math.min(safeCap, Math.max(0, Number.isFinite(current) ? current : 0) + Math.max(0, Number.isFinite(added) ? added : 0))
+}
+export function addMagnetDuration(current: number, added = CONFIG.pickups.magnet): number {
+  return addChainedDuration(current, added, MAGNET_MAX_SECONDS)
+}
+
 /** Grant the power a swallowed celestial carries. Returns false when already at max stacks. */
 export function addPower(stacks: PowerStacks, celestial: CelestialId): boolean {
   const power = CELESTIALS[celestial].power

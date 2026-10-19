@@ -6,6 +6,9 @@ export type TrapId = typeof TRAP_IDS[number]
 export type TimedTrapId = Extract<TrapId, 'freeze' | 'slow' | 'reverse'>
 export const SPECIALS = {
   surpriseLifetime: 5,
+  surpriseChainWindow: 90,
+  surpriseChainBonus: 3,
+  surpriseDurationCap: 42,
   firstSurprise: 18,
   zoneDuration: 18,
   zoneExpansion: 28,

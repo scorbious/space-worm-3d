@@ -99,8 +99,11 @@ export type HudState = {
   zoneLeft: number
   shrinkLeft: number
   ghostLeft: number
+  ghostCooldown: number
   electricLeft: number
   bombs: { left: number; limit: number; next: number } | null
+  laserUnlocked: boolean
+  laserUsed: boolean
   upgradeLevels: UpgradeLevels
   traps: Record<TimedTrapId, number>
   trapGrace: number
@@ -118,7 +121,7 @@ const ray = new THREE.Raycaster()
 const ndc = new THREE.Vector2()
 const hit = new THREE.Vector3()
 
-export type PlayerProfile = () => { name: string; skin: string; color?: WormColor; headStyle?: HeadStyle; upgrades?: Partial<UpgradeLevels> }
+export type PlayerProfile = () => { name: string; skin: string; color?: WormColor; headStyle?: HeadStyle; upgrades?: Partial<UpgradeLevels>; laserUnlocked?: boolean }
 
 export class Game {
   mode: GameMode = 'title'
@@ -208,7 +211,7 @@ export class Game {
     this.sendOnlineInput = null
     const p = this.profile()
     this.matchType = mode
-    this.sim = new Sim({ mode, round, campaign, playerName: p.name, playerSkin: p.skin, playerColor: p.color, headStyle: p.headStyle, bots: campaign?.bots, premium: p.upgrades })
+    this.sim = new Sim({ mode, round, campaign, playerName: p.name, playerSkin: p.skin, playerColor: p.color, headStyle: p.headStyle, bots: campaign?.bots, premium: p.upgrades, laserUnlocked: p.laserUnlocked })
     this.sim.events.length = 0
     this.view.bind(this.sim)
     this.mode = 'playing'
@@ -365,6 +368,7 @@ export class Game {
       ghost: this.input.consume('ghost'),
       electric: this.input.consume('electric'),
       bomb: this.input.consume('bomb'),
+      laser: this.input.consume('laser'),
     }
   }
 
@@ -866,13 +870,16 @@ export class Game {
       zoneLeft: sim.zoneLeft,
       shrinkLeft: P.alive ? P.shrinkLeft : 0,
       ghostLeft: P.alive ? P.ghostLeft : 0,
+      ghostCooldown: P.alive ? P.ghostCooldownLeft : 0,
       electricLeft: P.alive ? P.electricLeft : 0,
       bombs: sim.playerUpgrades.bomb > 0 ? {
         left: sim.bombs.filter(b => b.alive && b.ownerId === P.id).length,
         limit: bombLimit(sim.playerUpgrades.bomb),
-        next: sim.bombs.filter(b => b.alive && b.ownerId === P.id).reduce((min, b) => Math.min(min, Math.max(0, b.expiresAt - sim.time)), Infinity),
+        next: sim.bombs.filter(b => b.alive && b.ownerId === P.id).reduce((min, b) => Math.min(min, Math.max(0, b.expiresAt - sim.time)), 0),
       } : null,
       upgradeLevels: { ...sim.playerUpgrades },
+      laserUnlocked: sim.laserUnlocked,
+      laserUsed: sim.laserUsed,
       traps: P.alive ? P.traps : { freeze: 0, slow: 0, reverse: 0 },
       trapGrace: P.alive ? P.trapGrace : 0,
       threatArrows: P.alive ? this.threatArrows() : [],

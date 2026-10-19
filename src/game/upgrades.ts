@@ -5,8 +5,13 @@
 import { UPGRADE_IDS, type UpgradeId } from './content'
 
 export type UpgradeLevels = Record<UpgradeId, number>
-/** Eight purchases make the shrink progression reach the advertised 10…80% range. */
-export const MAX_UPGRADE_LEVEL = 8
+/** Ten purchases make the shrink progression reach the advertised 10…100% range. */
+export const MAX_UPGRADE_LEVEL = 10
+
+/** The destructive laser is a separate, one-shot campaign purchase. */
+export const LASER_PRICE = 250000
+export const LASER_RANGE = 72
+export const LASER_CONE = 0.52
 
 export type UpgradeDefinition = {
   id: UpgradeId
@@ -52,7 +57,14 @@ export function nextUpgradePrice(id: UpgradeId, currentLevel: number): number | 
 }
 
 export function ghostDuration(level: number): number {
-  return level <= 0 ? 0 : 4 + Math.min(MAX_UPGRADE_LEVEL, level) * 0.9
+  const n = Math.min(MAX_UPGRADE_LEVEL, Math.max(0, Math.floor(level)))
+  return n <= 0 ? 0 : 5 + (n - 1) * 0.9
+}
+
+/** Cooldown begins after the ghost window ends and scales with every duration upgrade. */
+export function ghostCooldown(level: number): number {
+  const duration = ghostDuration(level)
+  return duration <= 0 ? 0 : 15 + (duration - 5) * 3
 }
 
 export function electricDuration(level: number): number {
@@ -66,7 +78,7 @@ export function electricDamage(level: number): number {
 
 /** Percentage of the worm's current length removed by an upgraded shrink surprise. */
 export function shrinkReductionPercent(level: number): number {
-  return level <= 0 ? 0 : Math.min(80, Math.floor(level) * 10)
+  return level <= 0 ? 0 : Math.min(100, Math.floor(level) * 10)
 }
 
 export function shrinkDuration(level: number): number {
@@ -74,11 +86,12 @@ export function shrinkDuration(level: number): number {
 }
 
 export function shrinkScale(level: number): number {
-  return level <= 0 ? 0.58 : Math.max(0.34, 0.58 - Math.min(MAX_UPGRADE_LEVEL, level) * 0.03)
+  return level <= 0 ? 0.58 : Math.max(0.42, 0.58 - Math.min(MAX_UPGRADE_LEVEL, level) * 0.016)
 }
 
 export function bombLifetime(level: number): number {
-  return level <= 0 ? 0 : 6 + Math.min(MAX_UPGRADE_LEVEL, level) * 1.5
+  const n = Math.min(MAX_UPGRADE_LEVEL, Math.max(0, Math.floor(level)))
+  return n <= 0 ? 0 : 5 + (n - 1) * 1.5
 }
 
 export function bombDamage(level: number): number {

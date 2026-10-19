@@ -6,7 +6,7 @@ import { SKINS } from '../game/content'
 import { validColor, validHead, type HeadStyle, type WormColor } from '../game/appearance'
 import { emptyRecords, LOCAL_BOARD_SIZE, type LifeEntry, type Records } from '../game/rules'
 import { campaignStage, defaultCampaignProgress, type CampaignProgressData } from '../game/campaign'
-import { emptyUpgradeLevels, nextUpgradePrice, sanitizeUpgradeLevels, upgradeLevel, type UpgradeLevels } from '../game/upgrades'
+import { emptyUpgradeLevels, LASER_PRICE, nextUpgradePrice, sanitizeUpgradeLevels, upgradeLevel, type UpgradeLevels } from '../game/upgrades'
 import type { UpgradeId } from '../game/content'
 
 export type Locale = 'en' | 'ar'
@@ -32,6 +32,8 @@ export type SaveData = {
   stardust: number
   /** Premium progression is separate from cosmetics, but spends the same safe local wallet. */
   upgrades: UpgradeLevels
+  /** One-time destructive laser unlock; it is intentionally not part of upgrade levels. */
+  laserUnlocked: boolean
   ownedSkins: string[]
   skin: string
   /** Additive v1 migration: missing/invalid choices preserve the original appearance. */
@@ -64,6 +66,7 @@ export function defaultSave(): SaveData {
     playerName: 'Stargazer',
     stardust: 0,
     upgrades: emptyUpgradeLevels(),
+    laserUnlocked: false,
     ownedSkins: ['nebula'],
     skin: 'nebula',
     color: 'skin',
@@ -127,6 +130,7 @@ export function parseSave(raw: string | null): SaveData {
     playerName: sanitizeName(data.playerName),
     stardust: nonNegInt(data.stardust),
     upgrades: sanitizeUpgradeLevels(data.upgrades),
+    laserUnlocked: data.laserUnlocked === true,
     ownedSkins: owned,
     skin,
     color: validColor(data.color),
@@ -188,6 +192,12 @@ export function purchaseUpgrade(data: SaveData, id: UpgradeId): SaveData | null 
     stardust: data.stardust - price,
     upgrades: sanitizeUpgradeLevels({ ...data.upgrades, [id]: current + 1 }),
   }
+}
+
+/** Unlock the expensive one-shot laser once; unlike upgrades it has no levels. */
+export function purchaseLaser(data: SaveData): SaveData | null {
+  if (data.laserUnlocked || data.stardust < LASER_PRICE) return null
+  return { ...data, stardust: data.stardust - LASER_PRICE, laserUnlocked: true }
 }
 
 export class SaveStore {
