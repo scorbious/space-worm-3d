@@ -6,7 +6,7 @@ import type { Audio } from '../engine/audio'
 import type { I18n } from '../engine/i18n'
 import { CampaignStore, LOCALES, sanitizeName, type Locale, type SaveData, type SaveStore } from '../engine/save'
 import { CONFIG } from '../game/config'
-import { CELESTIALS, CELESTIAL_IDS, PICKUP_IDS, POWERS, POWER_IDS, SKINS, skinById, type CelestialId, type PickupId } from '../game/content'
+import { CELESTIALS, CELESTIAL_IDS, PICKUP_IDS, POWERS, POWER_IDS, SKINS, UPGRADE_IDS, skinById, type CelestialId, type PickupId, type UpgradeId } from '../game/content'
 import { appearanceSkin, HEAD_STYLES, validColor, validHead, WORM_COLORS } from '../game/appearance'
 import type { FeedItem, Game, HudState, LifeResult, MatchResult, ThreatArrow } from '../game/game'
 import { glyphSvg, type GlyphId } from '../game/glyphs'
@@ -18,8 +18,9 @@ import { icon } from './icons'
 import { Minimap } from './minimap'
 import { Sparks } from './sparks'
 import { assets } from '../engine/assets'
+import { UPGRADE_DEFS, nextUpgradePrice } from '../game/upgrades'
 
-export type Screen = 'boot' | 'loading' | 'title' | 'hud' | 'pause' | 'settings' | 'skins' | 'records' | 'howto' | 'death' | 'match' | 'multiplayer' | 'campaign' | 'campaignResult'
+export type Screen = 'boot' | 'loading' | 'title' | 'hud' | 'pause' | 'settings' | 'skins' | 'upgrades' | 'records' | 'howto' | 'death' | 'match' | 'multiplayer' | 'campaign' | 'campaignResult'
 
 export type UiActions = {
   play(mode: Mode, round?: CompetitiveRound): void
@@ -29,7 +30,9 @@ export type UiActions = {
   quit(): void
   settings(patch: Partial<SaveData>): void
   buySkin(id: string): boolean
+  buyUpgrade(id: UpgradeId): boolean
   equipSkin(id: string): void
+  ability(kind: 'ghost' | 'electric' | 'bomb'): void
   /** Forget which first-encounter hazard hints were shown. */
   resetHints(): void
   multiplayer(action: string, value?: string): void
@@ -134,6 +137,7 @@ export class Ui {
             <div class="wallet">${icon('stardust')}<b data-bind="stardust">0</b></div>
           </div>
           <button class="campaign-launch" data-action="campaign">${icon('trophy')}<span><b>${T('campaign.title')}</b><small>${T('campaign.subtitle')}</small></span><strong>${T('campaign.open')}</strong></button>
+          <button class="upgrade-launch" data-action="upgrades">${icon('bolt')}<span><b>${T('upgradeLab.title')}</b><small>${T('upgradeLab.subtitle')}</small></span><strong>${T('upgradeLab.open')}</strong></button>
           <div class="modes">
             <button class="mode-card ffa" data-action="play-ffa">${icon('play')}<strong>${T('title.ffa')}</strong><small>${T('title.ffaDesc')}</small></button>
             <button class="mode-card team" data-action="play-team">${icon('team')}<strong>${T('title.team')}</strong><small>${T('title.teamDesc')}</small></button>
@@ -167,6 +171,10 @@ export class Ui {
 
       <section class="screen menu" data-screen="campaignResult">
         <div class="panel card campaign-result-card" data-bind="campaignResult"></div>
+      </section>
+
+      <section class="screen menu" data-screen="upgrades">
+        <div class="panel card wide upgrade-card" data-bind="upgrades"></div>
       </section>
 
       <section class="screen hud" data-screen="hud">
@@ -216,6 +224,11 @@ export class Ui {
             <span class="chip chip-boost" data-bind="boostChip"></span>
             <span class="chip chip-slow">${icon('well')}<span data-i18n="hud.slowed"></span></span>
             <span class="chip chip-rim">${icon('rim')}<span data-i18n="hud.rim"></span></span>
+            <div class="ability-buttons" role="group" data-i18n-label="hud.abilities">
+              <button class="ability-btn ability-ghost" data-action="ability-ghost" data-i18n-title="ability.ghost"><b>G</b><small data-i18n="ability.ghost.short"></small><span></span></button>
+              <button class="ability-btn ability-electric" data-action="ability-electric" data-i18n-title="ability.electric"><b>E</b><small data-i18n="ability.electric.short"></small><span></span></button>
+              <button class="ability-btn ability-bomb" data-action="ability-bomb" data-i18n-title="ability.bomb"><b>B</b><small data-i18n="ability.bomb.short"></small><span></span></button>
+            </div>
           </div>
         </div>
         <div class="campaign-hud panel" data-bind="campaignHud" hidden></div>
@@ -362,6 +375,14 @@ export class Ui {
       case 'play-ffa': return this.actions.play('ffa')
       case 'play-team': return this.actions.play('team')
       case 'campaign': return this.actions.campaign('open')
+      case 'upgrades':
+        this.subReturn = this.screen
+        return this.show('upgrades')
+      case 'buy-upgrade':
+        return this.onUpgrade(el.dataset.upgrade as UpgradeId)
+      case 'ability-ghost': return this.actions.ability('ghost')
+      case 'ability-electric': return this.actions.ability('electric')
+      case 'ability-bomb': return this.actions.ability('bomb')
       case 'campaign-start': return this.actions.campaign('start', Number(el.dataset.stage))
       case 'campaign-next': return this.actions.campaign('next', Number(el.dataset.stage))
       case 'campaign-retry': return this.actions.campaign('start', Number(el.dataset.stage))
@@ -431,7 +452,7 @@ export class Ui {
   /** Escape / Back navigation. Returns false when there is nothing to go back to. */
   back(): boolean {
     if (this.screen === 'settings') this.show(this.settingsReturn)
-    else if (this.screen === 'skins' || this.screen === 'records' || this.screen === 'howto') this.show(this.subReturn)
+    else if (this.screen === 'skins' || this.screen === 'upgrades' || this.screen === 'records' || this.screen === 'howto') this.show(this.subReturn)
     else if (this.screen === 'campaign' || this.screen === 'campaignResult') this.show('title')
     else if (this.screen === 'multiplayer') {
       this.actions.multiplayer('leave')
@@ -462,6 +483,22 @@ export class Ui {
     this.refreshWallet()
   }
 
+  private onUpgrade(id: UpgradeId): void {
+    if (!UPGRADE_IDS.includes(id)) return
+    if (this.actions.buyUpgrade(id)) {
+      this.audio.play('buy')
+      this.toast('upgradeLab.purchased', { name: this.t(`upgrade.${id}`), n: this.save.data.upgrades[id] }, 'good')
+      const card = this.root.querySelector(`[data-upgrade="${id}"]`)
+      if (card) {
+        this.sparks.burstAround(card, '#7ff6ff', 30)
+        const r = card.getBoundingClientRect()
+        this.sparks.ring(r.left + r.width / 2, r.top + r.height / 2, '#7ff6ff', r.width * 0.65)
+      }
+    } else this.audio.play('bump')
+    this.refreshWallet()
+    this.renderUpgrades()
+  }
+
   // ─── screens ────────────────────────────────────────────────────────────
   show(screen: Screen): void {
     this.screen = screen
@@ -479,6 +516,10 @@ export class Ui {
     if (screen === 'skins') {
       this.refreshWallet()
       this.renderSkins()
+    }
+    if (screen === 'upgrades') {
+      this.refreshWallet()
+      this.renderUpgrades()
     }
     if (screen === 'records') this.renderRecords()
     if (screen === 'howto') this.renderHowto()
@@ -529,6 +570,7 @@ export class Ui {
     if (this.screen === 'campaign') this.renderCampaign()
     if (this.screen === 'campaignResult' && this.lastCampaignResult) this.renderCampaignResult()
     if (this.screen === 'skins') this.renderSkins()
+    if (this.screen === 'upgrades') this.renderUpgrades()
     if (this.screen === 'records') this.renderRecords()
     if (this.screen === 'howto') this.renderHowto()
     if (this.screen === 'multiplayer') this.renderMultiplayer()
@@ -583,6 +625,29 @@ export class Ui {
       ${result.success ? `<p class="campaign-reward-earned">${icon('stardust')}<b>${result.reward ? `+${this.i18n.n(result.reward)}` : t('campaign.claimed')}</b> ${t('campaign.rewardWord')}</p><p class="campaign-evolution">${t('campaign.evolution', { n: result.stage.id })}</p>` : ''}
       <div class="actions">${result.success && next ? `<button class="btn primary" data-action="campaign-next" data-stage="${next}">${icon('play')}${t('campaign.next')}</button>` : ''}<button class="btn ${result.success && !next ? 'primary' : ''}" data-action="campaign-retry" data-stage="${result.stage.id}">${t('campaign.retry')}</button><button class="btn ghost" data-action="quit">${t('death.title.menu')}</button></div>`
     if (result.success) window.setTimeout(() => this.sparks.burstAround(el.querySelector('h2') ?? el, '#ffd54f', 42), 200)
+  }
+
+  private renderUpgrades(): void {
+    const el = this.root.querySelector<HTMLElement>('[data-bind="upgrades"]')
+    if (!el) return
+    const d = this.save.data
+    const t = (key: string, vars?: Record<string, string | number>) => esc(this.t(key, vars))
+    const cards = UPGRADE_IDS.map(id => {
+      const level = d.upgrades[id]
+      const def = UPGRADE_DEFS[id]
+      const price = nextUpgradePrice(id, level)
+      const maxed = price === null
+      const affordable = !maxed && d.stardust >= price
+      const status = maxed ? t('upgradeLab.maxed') : affordable ? t('upgradeLab.buy') : t('upgradeLab.need', { n: this.i18n.n(price! - d.stardust) })
+      return `<article class="upgrade-tile upgrade-${id}" data-upgrade="${id}" style="--c:${hexCss(def.color)}">
+        <header><span class="upgrade-mark">${id.slice(0, 1).toUpperCase()}</span><div><h3>${t(`upgrade.${id}`)}</h3><p>${t(`upgrade.${id}.desc`)}</p></div></header>
+        <div class="upgrade-level"><span>${t('upgradeLab.level', { n: level })}</span><i><em style="width:${level / def.maxLevel * 100}%"></em></i><b>${level}/${def.maxLevel}</b></div>
+        <p class="upgrade-effect">${t(`upgrade.${id}.effect`, { n: level > 0 ? level : 1 })}</p>
+        <button class="btn ${affordable ? 'primary' : 'ghost'}" data-action="buy-upgrade" data-upgrade="${id}" ${maxed || !affordable ? 'disabled' : ''}>${maxed ? status : `${icon('stardust')}${t('upgradeLab.buyFor', { n: this.i18n.n(price!) })}`}</button>
+        <small class="upgrade-status ${affordable || maxed ? '' : 'locked'}">${status}</small>
+      </article>`
+    }).join('')
+    el.innerHTML = `<header><div><p class="eyebrow">${t('upgradeLab.eyebrow')}</p><h2>${t('upgradeLab.title')}</h2><p class="upgrade-note">${t('upgradeLab.note')}</p></div><div class="wallet">${icon('stardust')}<b>${this.i18n.n(d.stardust)}</b></div></header><div class="upgrade-grid">${cards}</div><footer><button class="btn ghost" data-action="back">${t('common.back')}</button></footer>`
   }
 
   private renderSkins(): void {
@@ -1024,6 +1089,24 @@ export class Ui {
     })
     hud.querySelector('.chip-slow')!.classList.toggle('is-on', h.slowed)
     hud.querySelector('.chip-rim')!.classList.toggle('is-on', h.rimDanger > 0.3)
+    const abilityState: { kind: 'ghost' | 'electric' | 'bomb'; left: number; level: number }[] = [
+      { kind: 'ghost', left: h.ghostLeft, level: h.upgradeLevels.ghost },
+      { kind: 'electric', left: h.electricLeft, level: h.upgradeLevels.electric },
+      { kind: 'bomb', left: h.bombs?.next ?? 0, level: h.upgradeLevels.bomb },
+    ]
+    for (const ability of abilityState) {
+      const button = hud.querySelector<HTMLButtonElement>(`.ability-${ability.kind}`)
+      if (!button) continue
+      const owned = ability.level > 0
+      button.disabled = !owned
+      button.classList.toggle('is-owned', owned)
+      const label = ability.kind === 'bomb'
+        ? h.bombs ? `${h.bombs.left}/${h.bombs.limit}${h.bombs.next > 0 ? ` · ${Math.ceil(h.bombs.next)}s` : ''}` : '—'
+        : ability.left > 0 ? this.t('common.seconds', { n: Math.ceil(ability.left) }) : owned ? this.t('hud.abilityReady') : '—'
+      button.querySelector('span')!.textContent = label
+      button.classList.toggle('is-active', ability.left > 0 && ability.kind !== 'bomb')
+      button.classList.toggle('is-ending', ability.left > 0 && ability.left <= 2)
+    }
     this.vignetteEl.style.opacity = String(h.rimDanger * 0.85)
     const respawn = h.respawnIn > 0 ? this.t('hud.respawnIn', { n: Math.ceil(h.respawnIn) }) : ''
     this.setIf('respawn', respawn, () => {

@@ -14,6 +14,10 @@ import {
   type CelestialId, type PickupId,
 } from './content'
 import {
+  bombDamage, bombLifetime, bombLimit, electricDamage, electricDuration, emptyUpgradeLevels, ghostDuration,
+  sanitizeUpgradeLevels, shrinkDuration as upgradedShrinkDuration, shrinkReductionPercent, shrinkScale, type UpgradeLevels,
+} from './upgrades'
+import {
   addPower, canBite, canConsume, emptyStacks, gateState, lengthFromMass, powerEffects, radiusForLength,
   selfSafeSegments, spacingForRadius, turnRateFor, wellSpeedFactor, normalizeCompetitiveRound, type CompetitiveRound, type Mode, type PowerStacks,
 } from './rules'
@@ -95,6 +99,11 @@ export type Worm = {
   brain: Brain | null
   /** Visual-only: seconds since last pickup, for head pulse. */
   gulp: number
+  /** Local premium ability timers; never serialized or sent to multiplayer peers. */
+  ghostLeft: number
+  electricLeft: number
+  electricLevel: number
+  shrinkReduction: number
   /** Feast combo: consecutive bites without a gap longer than CONFIG.feast.comboWindow. */
   combo: number
   comboTimer: number
@@ -112,6 +121,7 @@ export type Gate = { ax: number; az: number; bx: number; bz: number; period: num
 export type Well = { x: number; z: number; r: number }
 export type Surprise = { id: number; kind: SurpriseId; ownerId: number; x: number; z: number; alive: boolean; expiresAt: number }
 export type Trap = { id: number; kind: TrapId; x: number; z: number; alive: boolean; expiresAt: number }
+export type Bomb = { id: number; ownerId: number; x: number; z: number; level: number; alive: boolean; expiresAt: number }
 
 export type DeathCause = 'worm' | 'self' | 'rim' | 'asteroid' | 'gate' | 'head'
 
@@ -140,10 +150,14 @@ export type SimEvent =
   | { type: 'zoneWarning'; remaining: number }
   | { type: 'zoneEnd'; radius: number }
   | { type: 'shrinkEnd'; worm: Worm }
+  | { type: 'ability'; worm: Worm; kind: 'ghost' | 'electric' | 'bomb'; duration: number; x: number; z: number }
+  | { type: 'electricHit'; worm: Worm; attacker: Worm; damage: number; x: number; z: number }
+  | { type: 'bombDetonate'; bomb: Bomb; target: Worm | null; damage: number; x: number; z: number }
+  | { type: 'bombExpire'; bomb: Bomb; x: number; z: number }
   | { type: 'trap'; worm: Worm; kind: TrapId; duration: number; resisted: boolean; x: number; z: number }
   | { type: 'trapEnd'; worm: Worm; kind: TimedTrapId }
 
-export type PlayerControl = { targetAngle: number | null; turn: number; boost: boolean }
+export type PlayerControl = { targetAngle: number | null; turn: number; boost: boolean; ghost?: boolean; electric?: boolean; bomb?: boolean }
 
 const ORB_COLORS = [0x5ef3ff, 0xff5fc8, 0xffd24f, 0x7dffb0, 0xa98bff, 0xff8a5c]
 
@@ -195,7 +209,7 @@ function segDistance(px: number, pz: number, ax: number, az: number, bx: number,
 
 const wrapAngle = (a: number) => Math.atan2(Math.sin(a), Math.cos(a))
 
-export type SimOptions = { mode: Mode; seed?: number; playerName: string; playerSkin: string; playerColor?: WormColor; headStyle?: HeadStyle; bots?: number; networkOnly?: boolean; round?: CompetitiveRound; campaign?: CampaignStage }
+export type SimOptions = { mode: Mode; seed?: number; playerName: string; playerSkin: string; playerColor?: WormColor; headStyle?: HeadStyle; bots?: number; networkOnly?: boolean; round?: CompetitiveRound; campaign?: CampaignStage; premium?: Partial<UpgradeLevels> }
 
 export class Sim {
   readonly mode: Mode
@@ -215,6 +229,8 @@ export class Sim {
   zoneLeft = 0
   surprises: Surprise[] = []
   traps: Trap[] = []
+  bombs: Bomb[] = []
+  readonly playerUpgrades: UpgradeLevels
   private zoneWarned = false
   private surpriseCooldown: number = SPECIALS.firstSurprise
   private trapCooldown = 0
@@ -250,6 +266,7 @@ export class Sim {
     this.baseRadius = this.radius
     this.environmentOffset = Math.abs(opts.seed ?? Math.floor(Math.random() * 10000)) % 6
     this.random = rng(opts.seed ?? (Math.random() * 2 ** 31) | 0)
+    this.playerUpgrades = sanitizeUpgradeLevels({ ...emptyUpgradeLevels(), ...(opts.premium ?? {}) })
     if (!opts.networkOnly) this.buildHazards()
     this.player = this.createWorm(opts.playerName, true, opts.mode === 'team' ? 0 : -1, opts.playerSkin)
     this.player.color = validColor(opts.playerColor)
@@ -336,7 +353,8 @@ export class Sim {
   private createWorm(name: string, isPlayer: boolean, team: number, skin: string): Worm {
     const w: Worm = {
       id: this.nextId++, name, isPlayer, team, skin, alive: false, xs: [], zs: [], kinds: [],
-      color: 'skin', headStyle: 'round', shrinkLeft: 0, traps: { freeze: 0, slow: 0, reverse: 0 }, trapGrace: 0,
+      color: 'skin', headStyle: 'round', shrinkLeft: 0, ghostLeft: 0, electricLeft: 0, electricLevel: 0, shrinkReduction: 0,
+      traps: { freeze: 0, slow: 0, reverse: 0 }, trapGrace: 0,
       angle: 0, targetAngle: 0, turnAxis: 0, mass: CONFIG.worm.startLength, radius: radiusForLength(CONFIG.worm.startLength),
       boosting: false, wantBoost: false, dropTimer: 0, stacks: emptyStacks(), magnet: 0, shield: 0, freeBoost: 0,
       envGrace: 0, spawnGrace: 0, speed: 0, slowed: false, peak: 0, kills: 0, celestials: 0, shards: 0, stars: 0, born: 0, survival: 0, bites: 0, biteImmuneId: -1, biteImmuneUntil: 0,
@@ -400,6 +418,10 @@ export class Sim {
     w.shield = 0
     w.freeBoost = 0
     w.shrinkLeft = 0
+    w.ghostLeft = 0
+    w.electricLeft = 0
+    w.electricLevel = 0
+    w.shrinkReduction = 0
     w.traps = { freeze: 0, slow: 0, reverse: 0 }
     w.trapGrace = 0
     w.envGrace = 0
@@ -413,6 +435,7 @@ export class Sim {
     w.celestials = 0
     w.shards = 0
     w.born = this.time
+    if (w.isPlayer) this.bombs = this.bombs.filter(b => b.ownerId !== w.id)
     if (!w.isPlayer && this.mode === 'ffa') w.skin = this.randomSkin()
     if (w.brain) {
       w.brain.think = this.random() * 0.2
@@ -577,6 +600,11 @@ export class Sim {
         if (w.comboTimer <= 0) w.combo = 0
       }
     }
+    if (control && this.player.alive) {
+      if (control.ghost) this.activateGhost(this.player)
+      if (control.electric) this.activateElectric(this.player)
+      if (control.bomb) this.dropBomb(this.player)
+    }
     this.updateCrown()
     this.updateSpecials(dt)
     this.rebuildGrid()
@@ -592,6 +620,7 @@ export class Sim {
       this.moveWorm(w, dt)
     }
     this.rebuildGrid()
+    this.detonateBombs()
     this.collide()
     this.eat(dt)
     this.driftCelestials(dt)
@@ -622,6 +651,43 @@ export class Sim {
 
   nextStageLength(): number | null {
     return this.stage < this.stageThresholds.length ? this.stageThresholds[this.stage] : null
+  }
+
+  /** Premium abilities are intentionally local-only and unavailable to network snapshots. */
+  activateGhost(w: Worm = this.player): boolean {
+    const level = w.isPlayer ? Math.max(0, Math.floor(this.playerUpgrades.ghost)) : 0
+    if (!w.alive || level <= 0 || w.ghostLeft > 0) return false
+    w.ghostLeft = ghostDuration(level)
+    this.events.push({ type: 'ability', worm: w, kind: 'ghost', duration: w.ghostLeft, x: w.xs[0], z: w.zs[0] })
+    return true
+  }
+
+  activateElectric(w: Worm = this.player): boolean {
+    const level = w.isPlayer ? Math.max(0, Math.floor(this.playerUpgrades.electric)) : 0
+    if (!w.alive || level <= 0 || w.electricLeft > 0) return false
+    w.electricLevel = level
+    w.electricLeft = electricDuration(level)
+    this.events.push({ type: 'ability', worm: w, kind: 'electric', duration: w.electricLeft, x: w.xs[0], z: w.zs[0] })
+    return true
+  }
+
+  dropBomb(w: Worm = this.player): boolean {
+    const level = w.isPlayer ? Math.max(0, Math.floor(this.playerUpgrades.bomb)) : 0
+    const active = this.bombs.filter(b => b.alive && b.ownerId === w.id).length
+    if (!w.alive || level <= 0 || active >= bombLimit(level)) return false
+    const tail = Math.max(0, w.xs.length - 1)
+    let x = w.xs[tail] - Math.cos(w.angle) * 1.4
+    let z = w.zs[tail] - Math.sin(w.angle) * 1.4
+    const safe = () => Math.hypot(x, z) < this.radius - 3 && !this.asteroids.some(a => Math.hypot(x - a.x, z - a.z) < a.r + 1.8)
+    if (!safe()) {
+      x = w.xs[0] - Math.cos(w.angle) * 3.5
+      z = w.zs[0] - Math.sin(w.angle) * 3.5
+    }
+    if (!safe()) return false
+    const bomb: Bomb = { id: this.nextId++, ownerId: w.id, x, z, level, alive: true, expiresAt: this.time + bombLifetime(level) }
+    this.bombs.push(bomb)
+    this.events.push({ type: 'ability', worm: w, kind: 'bomb', duration: bombLifetime(level), x, z })
+    return true
   }
 
   campaignProgress(): CampaignStats | null {
@@ -757,7 +823,41 @@ export class Sim {
       w.zs.splice(idx, 1)
       w.kinds.splice(idx, 1)
     }
-    w.radius = radiusForLength(w.xs.length) * (w.shrinkLeft > 0 ? SPECIALS.shrinkScale : 1)
+    w.radius = radiusForLength(w.xs.length) * (w.shrinkLeft > 0 ? shrinkScale(Math.ceil(w.shrinkReduction / 10)) : 1)
+  }
+
+  /** Remove tail length for electric/bomb damage while preserving the minimum viable worm. */
+  private trimWorm(w: Worm, amount: number): number {
+    const keep = Math.max(4, w.xs.length - Math.max(0, Math.floor(amount)))
+    if (keep >= w.xs.length) return 0
+    for (const k of w.kinds.slice(keep)) {
+      if (!k) continue
+      const power = CELESTIALS[k].power
+      w.stacks[power] = Math.max(0, w.stacks[power] - 1)
+    }
+    const lost = w.xs.length - keep
+    w.xs.length = keep
+    w.zs.length = keep
+    w.kinds.length = keep
+    w.mass = keep
+    w.radius = radiusForLength(keep) * (w.shrinkLeft > 0 ? shrinkScale(Math.ceil(w.shrinkReduction / 10)) : 1)
+    w.combo = 0
+    w.comboTimer = 0
+    return lost
+  }
+
+  private detonateBombs(): void {
+    for (const bomb of this.bombs) {
+      if (!bomb.alive || bomb.expiresAt <= this.time) continue
+      // A dropped bomb is a proximity hazard, not a head-only projectile: any enemy body
+      // segment in the blast radius is a valid target, while the owner is always immune.
+      const target = this.worms.find(w => w.alive && w.id !== bomb.ownerId && w.xs.some((x, i) => Math.hypot(x - bomb.x, w.zs[i] - bomb.z) < w.radius + 2.6)) ?? null
+      if (!target) continue
+      bomb.alive = false
+      const damage = bombDamage(bomb.level)
+      this.trimWorm(target, damage)
+      this.events.push({ type: 'bombDetonate', bomb, target, damage, x: bomb.x, z: bomb.z })
+    }
   }
 
   // ─── collisions ─────────────────────────────────────────────────────────
@@ -779,7 +879,7 @@ export class Sim {
         nx = -hx / dc
         nz = -hz / dc
       }
-      if (!envCause) {
+      if (!envCause && w.ghostLeft <= 0) {
         for (const a of this.asteroids) {
           const d = Math.hypot(hx - a.x, hz - a.z)
           if (d < a.r + w.radius * 0.8) {
@@ -790,7 +890,7 @@ export class Sim {
           }
         }
       }
-      if (!envCause) {
+      if (!envCause && w.ghostLeft <= 0) {
         for (const g of this.gates) {
           if (this.gateAt(g).phase !== 'on') continue
           if (segDistance(hx, hz, g.ax, g.az, g.bx, g.bz) < w.radius * 0.8 + 0.35) {
@@ -841,12 +941,21 @@ export class Sim {
       this.grid.query(hx, hz, reach, (oi, s) => {
         const o = this.worms[oi]
         if (!o.alive || o.spawnGrace > 0) return
+        // Ghosts can pass through worms and cannot be eaten. The arena rim remains checked above.
+        if (w.ghostLeft > 0 || o.ghostLeft > 0) return
         if (o === w) {
           if (s < selfSafe) return
         } else if (this.mode === 'team' && o.team === w.team) return
         else if (o.id === w.biteImmuneId && this.time < w.biteImmuneUntil) return
         const d = Math.hypot(o.xs[s] - hx, o.zs[s] - hz)
         if (d >= w.radius * 0.72 + o.radius * 0.82) return
+        // Only the current crown holder (the king) can destroy an electrified worm.
+        if (o.electricLeft > 0 && this.crownId !== w.id) {
+          const damage = electricDamage(o.electricLevel)
+          this.trimWorm(w, damage)
+          this.events.push({ type: 'electricHit', worm: o, attacker: w, damage, x: hx, z: hz })
+          return true
+        }
         if (o === w) {
           hit = { killer: null, cause: 'self' }
           return true
@@ -913,7 +1022,7 @@ export class Sim {
     v.zs.length = keep
     v.kinds.length = keep
     v.mass = keep + (v.mass % 1)
-    v.radius = radiusForLength(keep) * (v.shrinkLeft > 0 ? SPECIALS.shrinkScale : 1)
+    v.radius = radiusForLength(keep) * (v.shrinkLeft > 0 ? shrinkScale(Math.ceil(v.shrinkReduction / 10)) : 1)
     v.combo = 0
     v.comboTimer = 0
     if (biter) {
@@ -1174,6 +1283,9 @@ export class Sim {
     for (const w of this.worms) {
       if (!w.alive) continue
       w.trapGrace = Math.max(0, w.trapGrace - dt)
+      w.ghostLeft = Math.max(0, w.ghostLeft - dt)
+      w.electricLeft = Math.max(0, w.electricLeft - dt)
+      if (w.electricLeft === 0) w.electricLevel = 0
       for (const kind of ['freeze', 'slow', 'reverse'] as const) {
         const was = w.traps[kind]
         w.traps[kind] = Math.max(0, was - dt)
@@ -1182,12 +1294,20 @@ export class Sim {
       if (w.shrinkLeft > 0) {
         w.shrinkLeft = Math.max(0, w.shrinkLeft - dt)
         if (w.shrinkLeft === 0) {
+          w.shrinkReduction = 0
           this.resize(w)
           w.spawnGrace = Math.max(w.spawnGrace, 0.8)
           this.events.push({ type: 'shrinkEnd', worm: w })
         }
       }
     }
+    for (const bomb of this.bombs) {
+      if (bomb.alive && this.time >= bomb.expiresAt) {
+        bomb.alive = false
+        this.events.push({ type: 'bombExpire', bomb, x: bomb.x, z: bomb.z })
+      }
+    }
+    this.bombs = this.bombs.filter(b => b.alive)
     if (this.zoneLeft > 0) {
       this.zoneLeft = Math.max(0, this.zoneLeft - dt)
       if (!this.zoneWarned && this.zoneLeft <= SPECIALS.returnWarning) {
@@ -1245,9 +1365,14 @@ export class Sim {
       this.permanentExpansion = Math.min(SPECIALS.maxLegendaryExpansion, this.permanentExpansion + SPECIALS.legendaryExpansion)
       this.refreshRadius()
     } else {
-      duration = SPECIALS.shrinkDuration
+      const level = w.isPlayer ? Math.max(0, Math.floor(this.playerUpgrades.shrink)) : 0
+      const reduction = shrinkReductionPercent(level)
+      duration = level > 0 ? upgradedShrinkDuration(level) : SPECIALS.shrinkDuration
+      w.shrinkReduction = reduction
       w.shrinkLeft = duration
-      this.resize(w) // Physical radius only: length, score, powers and crown eligibility are unchanged.
+      // Shrink changes the physical collision radius only. It must never remove length,
+      // powers, score or crown eligibility; the purchased percentage is exposed visually/HUD.
+      this.resize(w)
     }
     w.gulp = 0
     this.events.push({ type: 'surprise', worm: w, kind, duration, x, z })

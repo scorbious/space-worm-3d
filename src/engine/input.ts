@@ -4,7 +4,7 @@
  *  - a relative turn axis (keyboard A/D or arrows),
  * plus a held boost flag. Gameplay reads `steer` and `boost`; it never checks raw events.
  */
-export type Action = 'boost' | 'pause' | 'confirm'
+export type Action = 'boost' | 'pause' | 'confirm' | 'ghost' | 'electric' | 'bomb'
 export type InputMethod = 'mouse' | 'keyboard' | 'gamepad' | 'touch'
 
 export type Steer =
@@ -19,6 +19,9 @@ const KEYS = {
   boost: ['Space', 'KeyW', 'ArrowUp', 'ShiftLeft', 'ShiftRight'],
   pause: ['Escape', 'KeyP'],
   confirm: ['Enter', 'NumpadEnter'],
+  ghost: ['KeyG'],
+  electric: ['KeyE'],
+  bomb: ['KeyB'],
 }
 
 export class Input {
@@ -48,6 +51,9 @@ export class Input {
       if (!e.repeat) {
         if (KEYS.pause.includes(e.code)) this.pressed_.add('pause')
         if (KEYS.confirm.includes(e.code)) this.pressed_.add('confirm')
+        if (KEYS.ghost.includes(e.code)) this.pressed_.add('ghost')
+        if (KEYS.electric.includes(e.code)) this.pressed_.add('electric')
+        if (KEYS.bomb.includes(e.code)) this.pressed_.add('bomb')
       }
       this.keys.add(e.code)
       if ([...KEYS.left, ...KEYS.right].includes(e.code)) {
@@ -134,6 +140,11 @@ export class Input {
   /** Read and clear a press. */
   consume(action: Action): boolean {
     return this.pressed_.delete(action)
+  }
+
+  /** Queue a one-shot action from an on-screen control. */
+  press(action: Action): void {
+    this.pressed_.add(action)
   }
 
   clearBoost(): void {

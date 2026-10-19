@@ -5,7 +5,7 @@ import { Audio } from './engine/audio'
 import { I18n, resolveLocale } from './engine/i18n'
 import { Input } from './engine/input'
 import { GameLoop } from './engine/loop'
-import { CampaignStore, purchaseSkin, SAVE_KEY, SaveStore, type SaveData } from './engine/save'
+import { CampaignStore, purchaseSkin, purchaseUpgrade, SAVE_KEY, SaveStore, type SaveData } from './engine/save'
 import type { Game, LifeResult } from './game/game'
 import type { HintId } from './game/threats'
 import { applyLife, insertLife, stardustForLife, type CompetitiveRound, type Mode } from './game/rules'
@@ -128,7 +128,14 @@ async function boot(): Promise<void> {
       save.replace(next)
       return true
     },
+    buyUpgrade: id => {
+      const next = purchaseUpgrade(save.data, id)
+      if (!next) return false
+      save.replace(next)
+      return true
+    },
     equipSkin: id => save.update({ skin: id }),
+    ability: kind => input.press(kind),
     campaign: (action, stageId) => {
       if (action === 'open') ui.show('campaign')
       else if (action === 'start' && stageId) void startCampaign(Number(stageId))
@@ -277,7 +284,7 @@ async function boot(): Promise<void> {
       if (!save.data.seenHints.includes(id)) save.update({ seenHints: [...save.data.seenHints, id] })
       ui.showHint(id)
     },
-  }, () => ({ name: save.data.playerName, skin: save.data.skin, color: save.data.color, headStyle: save.data.headStyle }))
+  }, () => ({ name: save.data.playerName, skin: save.data.skin, color: save.data.color, headStyle: save.data.headStyle, upgrades: save.data.upgrades }))
   game.reducedMotion = save.data.reducedMotion
   game.threatMode = save.data.threatMode
   game.setQuality(save.data.quality)

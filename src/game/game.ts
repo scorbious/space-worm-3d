@@ -16,6 +16,7 @@ import { CELESTIALS, skinById, type CelestialId, type PickupId } from './content
 import { powerEffects, type CompetitiveRound, type Mode, type PowerStacks } from './rules'
 import { validColor, validHead, type HeadStyle, type WormColor } from './appearance'
 import { SPECIAL_COLORS, type SurpriseId, type TimedTrapId } from './specials'
+import { bombLimit, type UpgradeLevels } from './upgrades'
 import type { EnvironmentId } from './environmentDefs'
 import { campaignGoalProgress, type CampaignStage, type CampaignStats } from './campaign'
 import { Sim, type DeathCause, type PlayerControl, type RoundStanding, type Worm } from './sim'
@@ -97,6 +98,10 @@ export type HudState = {
   surprise: { kind: SurpriseId; left: number; distance: number; bearing: number } | null
   zoneLeft: number
   shrinkLeft: number
+  ghostLeft: number
+  electricLeft: number
+  bombs: { left: number; limit: number; next: number } | null
+  upgradeLevels: UpgradeLevels
   traps: Record<TimedTrapId, number>
   trapGrace: number
   threatArrows: ThreatArrow[]
@@ -113,7 +118,7 @@ const ray = new THREE.Raycaster()
 const ndc = new THREE.Vector2()
 const hit = new THREE.Vector3()
 
-export type PlayerProfile = () => { name: string; skin: string; color?: WormColor; headStyle?: HeadStyle }
+export type PlayerProfile = () => { name: string; skin: string; color?: WormColor; headStyle?: HeadStyle; upgrades?: Partial<UpgradeLevels> }
 
 export class Game {
   mode: GameMode = 'title'
@@ -203,7 +208,7 @@ export class Game {
     this.sendOnlineInput = null
     const p = this.profile()
     this.matchType = mode
-    this.sim = new Sim({ mode, round, campaign, playerName: p.name, playerSkin: p.skin, playerColor: p.color, headStyle: p.headStyle, bots: campaign?.bots })
+    this.sim = new Sim({ mode, round, campaign, playerName: p.name, playerSkin: p.skin, playerColor: p.color, headStyle: p.headStyle, bots: campaign?.bots, premium: p.upgrades })
     this.sim.events.length = 0
     this.view.bind(this.sim)
     this.mode = 'playing'
@@ -353,7 +358,14 @@ export class Game {
       turn = s.axis
     }
     if (target !== null) this.lastTarget = target
-    return { targetAngle: target, turn, boost: this.input.boost }
+    return {
+      targetAngle: target,
+      turn,
+      boost: this.input.boost,
+      ghost: this.input.consume('ghost'),
+      electric: this.input.consume('electric'),
+      bomb: this.input.consume('bomb'),
+    }
   }
 
   private warnings(dt: number): void {
@@ -602,6 +614,28 @@ export class Game {
         case 'shrinkEnd':
           if (e.worm === P && this.mode === 'playing') this.hooks.toast('toast.shrinkEnd', {}, 'info')
           break
+        case 'ability':
+          if (e.worm === P) {
+            this.audio.play(e.kind === 'bomb' ? 'pickup' : 'power')
+            this.hooks.toast(`toast.ability.${e.kind}`, { n: Math.ceil(e.duration) }, 'power')
+          }
+          break
+        case 'electricHit':
+          if (e.attacker === P) {
+            this.audio.play('bump')
+            this.hooks.flash('hit')
+            this.hooks.toast('toast.electricHit', { n: e.damage }, 'bad')
+          }
+          break
+        case 'bombDetonate':
+          if (e.bomb.ownerId === P.id) {
+            this.audio.play('shield')
+            this.hooks.callout('callout.bomb', { n: e.damage }, 2)
+          }
+          break
+        case 'bombExpire':
+          if (e.bomb.ownerId === P.id && this.mode === 'playing') this.hooks.toast('toast.bombExpired', {}, 'info')
+          break
         case 'trap':
           if (this.near(e.x, e.z)) fx.bite(e.x, e.z, SPECIAL_COLORS[e.kind], 0, e.worm === P)
           if (e.worm === P) {
@@ -831,6 +865,14 @@ export class Game {
       } : null,
       zoneLeft: sim.zoneLeft,
       shrinkLeft: P.alive ? P.shrinkLeft : 0,
+      ghostLeft: P.alive ? P.ghostLeft : 0,
+      electricLeft: P.alive ? P.electricLeft : 0,
+      bombs: sim.playerUpgrades.bomb > 0 ? {
+        left: sim.bombs.filter(b => b.alive && b.ownerId === P.id).length,
+        limit: bombLimit(sim.playerUpgrades.bomb),
+        next: sim.bombs.filter(b => b.alive && b.ownerId === P.id).reduce((min, b) => Math.min(min, Math.max(0, b.expiresAt - sim.time)), Infinity),
+      } : null,
+      upgradeLevels: { ...sim.playerUpgrades },
       traps: P.alive ? P.traps : { freeze: 0, slow: 0, reverse: 0 },
       trapGrace: P.alive ? P.trapGrace : 0,
       threatArrows: P.alive ? this.threatArrows() : [],

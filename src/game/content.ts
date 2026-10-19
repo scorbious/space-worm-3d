@@ -7,6 +7,10 @@ export type CelestialId = 'moon' | 'comet' | 'planet' | 'star' | 'pulsar'
 export type PowerId = 'tide' | 'tail' | 'core' | 'drive' | 'heart'
 export type PickupId = 'magnet' | 'shield' | 'freeBoost'
 
+/** Premium abilities are local-only progression; they are never granted by a run. */
+export const UPGRADE_IDS = ['ghost', 'electric', 'shrink', 'bomb'] as const
+export type UpgradeId = typeof UPGRADE_IDS[number]
+
 export type CelestialDef = {
   id: CelestialId
   power: PowerId

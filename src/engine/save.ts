@@ -6,6 +6,8 @@ import { SKINS } from '../game/content'
 import { validColor, validHead, type HeadStyle, type WormColor } from '../game/appearance'
 import { emptyRecords, LOCAL_BOARD_SIZE, type LifeEntry, type Records } from '../game/rules'
 import { campaignStage, defaultCampaignProgress, type CampaignProgressData } from '../game/campaign'
+import { emptyUpgradeLevels, nextUpgradePrice, sanitizeUpgradeLevels, upgradeLevel, type UpgradeLevels } from '../game/upgrades'
+import type { UpgradeId } from '../game/content'
 
 export type Locale = 'en' | 'ar'
 export const LOCALES: Locale[] = ['en', 'ar']
@@ -15,7 +17,7 @@ export type ThreatDetail = 'full' | 'minimal'
 export const HINT_IDS = ['rival', 'asteroid', 'gate', 'well', 'rim', 'edible', 'bite'] as const
 
 export type SaveData = {
-  version: 1
+  version: 2
   /** '' = never chosen; the game follows the browser language until the player picks one. */
   locale: Locale | ''
   musicVolume: number
@@ -28,6 +30,8 @@ export type SaveData = {
   tutorialDone: boolean
   playerName: string
   stardust: number
+  /** Premium progression is separate from cosmetics, but spends the same safe local wallet. */
+  upgrades: UpgradeLevels
   ownedSkins: string[]
   skin: string
   /** Additive v1 migration: missing/invalid choices preserve the original appearance. */
@@ -48,7 +52,7 @@ export const CAMPAIGN_SAVE_KEY = 'spaceworm.campaign'
 
 export function defaultSave(): SaveData {
   return {
-    version: 1,
+    version: 2,
     locale: '',
     musicVolume: 0.6,
     sfxVolume: 0.8,
@@ -59,6 +63,7 @@ export function defaultSave(): SaveData {
     tutorialDone: false,
     playerName: 'Stargazer',
     stardust: 0,
+    upgrades: emptyUpgradeLevels(),
     ownedSkins: ['nebula'],
     skin: 'nebula',
     color: 'skin',
@@ -92,7 +97,8 @@ export function parseSave(raw: string | null): SaveData {
   } catch {
     return base
   }
-  if (data.version !== 1) return base
+  // v1 saves predate the Upgrade Lab; missing upgrade data safely migrates to level zero.
+  if (data.version !== 1 && data.version !== 2) return base
   const skinIds = new Set(SKINS.map(s => s.id))
   const owned = Array.isArray(data.ownedSkins) ? data.ownedSkins.filter((s): s is string => typeof s === 'string' && skinIds.has(s)) : []
   if (!owned.includes('nebula')) owned.unshift('nebula')
@@ -109,7 +115,7 @@ export function parseSave(raw: string | null): SaveData {
     .slice(0, LOCAL_BOARD_SIZE)
   const skin = typeof data.skin === 'string' && owned.includes(data.skin) ? data.skin : 'nebula'
   return {
-    version: 1,
+    version: 2,
     locale: data.locale === 'en' || data.locale === 'ar' ? data.locale : '',
     musicVolume: clamp01(data.musicVolume, base.musicVolume),
     sfxVolume: clamp01(data.sfxVolume, base.sfxVolume),
@@ -120,6 +126,7 @@ export function parseSave(raw: string | null): SaveData {
     tutorialDone: data.tutorialDone === true,
     playerName: sanitizeName(data.playerName),
     stardust: nonNegInt(data.stardust),
+    upgrades: sanitizeUpgradeLevels(data.upgrades),
     ownedSkins: owned,
     skin,
     color: validColor(data.color),
@@ -169,6 +176,18 @@ export function purchaseSkin(data: SaveData, skinId: string): SaveData | null {
   const skin = SKINS.find(s => s.id === skinId)
   if (!skin || data.ownedSkins.includes(skinId) || data.stardust < skin.price) return null
   return { ...data, stardust: data.stardust - skin.price, ownedSkins: [...data.ownedSkins, skinId], skin: skinId }
+}
+
+/** Buy the next premium level only when the wallet can afford it; pure for unit tests. */
+export function purchaseUpgrade(data: SaveData, id: UpgradeId): SaveData | null {
+  const current = upgradeLevel(data.upgrades, id)
+  const price = nextUpgradePrice(id, current)
+  if (price === null || data.stardust < price) return null
+  return {
+    ...data,
+    stardust: data.stardust - price,
+    upgrades: sanitizeUpgradeLevels({ ...data.upgrades, [id]: current + 1 }),
+  }
 }
 
 export class SaveStore {
