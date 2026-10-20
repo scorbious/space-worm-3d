@@ -18,9 +18,12 @@ import { icon } from './icons'
 import { Minimap } from './minimap'
 import { Sparks } from './sparks'
 import { assets } from '../engine/assets'
-import { LASER_PRICE, UPGRADE_DEFS, nextUpgradePrice } from '../game/upgrades'
+import { LASER_PRICE, UPGRADE_DEFS, nextUpgradePrice, upgradeStats, needsPurchaseConfirmation } from '../game/upgrades'
 
-export type Screen = 'boot' | 'loading' | 'title' | 'hud' | 'pause' | 'settings' | 'skins' | 'upgrades' | 'records' | 'howto' | 'death' | 'match' | 'multiplayer' | 'campaign' | 'campaignResult'
+import { dailyDay, dailyMissions, sanitizeDaily, type DailyMetric } from '../game/daily'
+import { COSMETICS, achievementProgress, ownsAppearance } from '../game/cosmetics'
+
+export type Screen = 'boot' | 'loading' | 'title' | 'hud' | 'pause' | 'settings' | 'skins' | 'upgrades' | 'records' | 'howto' | 'death' | 'match' | 'multiplayer' | 'campaign' | 'campaignResult' | 'daily'
 
 export type UiActions = {
   play(mode: Mode, round?: CompetitiveRound): void
@@ -32,8 +35,11 @@ export type UiActions = {
   buySkin(id: string): boolean
   buyUpgrade(id: UpgradeId): boolean
   equipSkin(id: string): void
-  ability(kind: 'ghost' | 'electric' | 'bomb' | 'laser'): void
+  ability(kind: 'ghost' | 'electric' | 'bomb' | 'laser' | 'shrink'): void
   buyLaser(): boolean
+  dailyClaim(id: DailyMetric): boolean
+  cosmetic(id: string): boolean
+  clearCosmetic(kind: string): void
   /** Forget which first-encounter hazard hints were shown. */
   resetHints(): void
   multiplayer(action: string, value?: string): void
@@ -157,6 +163,7 @@ export class Ui {
           <a class="developer-link" href="https://t.me/LordOfShdow" target="_blank" rel="noopener noreferrer">${icon('team')}${T('title.developer')}</a>
           <div class="title-links">
             ${btn('skins', 'title.skins', 'ghost', 'palette')}
+            ${btn('daily', 'daily.title', 'ghost', 'stardust')}
             ${btn('records', 'title.records', 'ghost', 'trophy')}
             ${btn('howto', 'title.howto', 'ghost', 'help')}
             ${btn('settings', 'title.settings', 'ghost', 'gear')}
@@ -173,6 +180,8 @@ export class Ui {
       <section class="screen menu" data-screen="campaignResult">
         <div class="panel card campaign-result-card" data-bind="campaignResult"></div>
       </section>
+
+      <section class="screen menu" data-screen="daily"><div class="panel card wide daily-card" data-bind="daily"></div></section>
 
       <section class="screen menu" data-screen="upgrades">
         <div class="panel card wide upgrade-card" data-bind="upgrades"></div>
@@ -229,6 +238,7 @@ export class Ui {
               <button class="ability-btn ability-ghost" data-action="ability-ghost" data-i18n-title="ability.ghost"><b>G</b><small data-i18n="ability.ghost.short"></small><span></span></button>
               <button class="ability-btn ability-electric" data-action="ability-electric" data-i18n-title="ability.electric"><b>E</b><small data-i18n="ability.electric.short"></small><span></span></button>
               <button class="ability-btn ability-bomb" data-action="ability-bomb" data-i18n-title="ability.bomb"><b>B</b><small data-i18n="ability.bomb.short"></small><span></span></button>
+              <button class="ability-btn ability-shrink" data-action="ability-shrink" data-i18n-title="ability.shrink"><b>R</b><small data-i18n="ability.shrink.short"></small><span></span></button>
               <button class="ability-btn ability-laser" data-action="ability-laser" data-i18n-title="ability.laser"><b>L</b><small data-i18n="ability.laser.short"></small><span></span></button>
             </div>
           </div>
@@ -271,6 +281,7 @@ export class Ui {
           <header><h2 data-i18n="skins.title"></h2><div class="wallet">${icon('stardust')}<b data-bind="stardust">0</b></div></header>
           <div class="appearance" data-bind="appearance"></div>
           <div class="skins" data-bind="skins"></div>
+          <section class="collection" data-bind="collection"></section>
           <footer>${btn('back', 'common.back', 'ghost')}</footer>
         </div>
       </section>
@@ -385,6 +396,7 @@ export class Ui {
       case 'ability-ghost': return this.actions.ability('ghost')
       case 'ability-electric': return this.actions.ability('electric')
       case 'ability-bomb': return this.actions.ability('bomb')
+      case 'ability-shrink': return this.actions.ability('shrink')
       case 'ability-laser': return this.actions.ability('laser')
       case 'buy-laser': return this.onLaser()
       case 'campaign-start': return this.actions.campaign('start', Number(el.dataset.stage))
@@ -424,19 +436,28 @@ export class Ui {
         this.settingsReturn = this.screen
         this.refreshSettings()
         return this.show('settings')
+      case 'daily':
       case 'skins':
       case 'records':
       case 'howto':
         this.subReturn = this.screen
         return this.show(action)
       case 'appearance-color':
+        if (!ownsAppearance(this.save.data, 'color', String(el.dataset.color))) return this.onCosmetic(`color-${el.dataset.color}`)
         this.actions.settings({ color: validColor(el.dataset.color) })
         this.renderSkins()
         return
       case 'appearance-head':
+        if (!ownsAppearance(this.save.data, 'head', String(el.dataset.head))) return this.onCosmetic(`head-${el.dataset.head}`)
         this.actions.settings({ headStyle: validHead(el.dataset.head) })
         this.renderSkins()
         return
+      case 'daily-claim':
+        if (this.actions.dailyClaim(el.dataset.mission as DailyMetric)) { this.audio.play('buy'); this.toast('daily.rewardClaimed', {}, 'good') }
+        this.renderDaily(); this.refreshWallet(); return
+      case 'cosmetic': return this.onCosmetic(String(el.dataset.cosmetic))
+      case 'cosmetic-clear':
+        this.actions.clearCosmetic(String(el.dataset.kind)); this.renderSkins(); this.applyCosmeticBackground(); return
       case 'back':
         this.back()
         return
@@ -456,7 +477,7 @@ export class Ui {
   /** Escape / Back navigation. Returns false when there is nothing to go back to. */
   back(): boolean {
     if (this.screen === 'settings') this.show(this.settingsReturn)
-    else if (this.screen === 'skins' || this.screen === 'upgrades' || this.screen === 'records' || this.screen === 'howto') this.show(this.subReturn)
+    else if (this.screen === 'daily' || this.screen === 'skins' || this.screen === 'upgrades' || this.screen === 'records' || this.screen === 'howto') this.show(this.subReturn)
     else if (this.screen === 'campaign' || this.screen === 'campaignResult') this.show('title')
     else if (this.screen === 'multiplayer') {
       this.actions.multiplayer('leave')
@@ -489,6 +510,8 @@ export class Ui {
 
   private onUpgrade(id: UpgradeId): void {
     if (!UPGRADE_IDS.includes(id)) return
+    const price = nextUpgradePrice(id, this.save.data.upgrades[id])
+    if (price === null || (needsPurchaseConfirmation(price) && !window.confirm(this.t('economy.confirm', { name: this.t(`upgrade.${id}`), price: this.i18n.n(price) }) + '\n' + this.statLine(id, this.save.data.upgrades[id]) + ' → ' + this.statLine(id, this.save.data.upgrades[id] + 1)))) return
     if (this.actions.buyUpgrade(id)) {
       this.audio.play('buy')
       this.toast('upgradeLab.purchased', { name: this.t(`upgrade.${id}`), n: this.save.data.upgrades[id] }, 'good')
@@ -505,6 +528,7 @@ export class Ui {
 
   private onLaser(): void {
     if (this.save.data.laserUnlocked) return
+    if (!window.confirm(this.t('economy.confirm', { name: this.t('upgradeLab.laser'), price: this.i18n.n(LASER_PRICE) }) + '\n' + this.t('upgradeLab.laserEffect'))) return
     if (this.actions.buyLaser()) {
       this.audio.play('buy')
       this.toast('upgradeLab.laserPurchased', {}, 'good')
@@ -519,6 +543,8 @@ export class Ui {
     this.screen = screen
     for (const el of this.root.querySelectorAll<HTMLElement>('[data-screen]')) el.classList.toggle('is-active', el.dataset.screen === screen)
     document.body.dataset.activeScreen = screen
+    this.applyCosmeticBackground()
+    if (screen === 'daily') this.renderDaily()
     if (screen === 'title') {
       this.refreshWallet()
       const best = this.save.data.records.bestLength
@@ -586,6 +612,7 @@ export class Ui {
     if (this.screen === 'campaignResult' && this.lastCampaignResult) this.renderCampaignResult()
     if (this.screen === 'skins') this.renderSkins()
     if (this.screen === 'upgrades') this.renderUpgrades()
+    if (this.screen === 'daily') this.renderDaily()
     if (this.screen === 'records') this.renderRecords()
     if (this.screen === 'howto') this.renderHowto()
     if (this.screen === 'multiplayer') this.renderMultiplayer()
@@ -642,6 +669,57 @@ export class Ui {
     if (result.success) window.setTimeout(() => this.sparks.burstAround(el.querySelector('h2') ?? el, '#ffd54f', 42), 200)
   }
 
+  private statLine(id: UpgradeId, level: number): string {
+    const stats = upgradeStats(id, level)
+    return this.t('economy.stats', { duration: stats.duration, damage: stats.damage, cooldown: stats.cooldown, count: stats.count })
+  }
+
+  private renderDaily(): void {
+    const daily = sanitizeDaily(this.save.data.daily)
+    this.save.update({ daily })
+    const el = this.root.querySelector<HTMLElement>('[data-bind="daily"]')!
+    el.innerHTML = `<header><div><p class="eyebrow">${daily.day} · UTC</p><h2>${esc(this.t('daily.title'))}</h2><p>${esc(this.t('daily.note'))}</p></div><div class="wallet">${icon('stardust')}${this.i18n.n(this.save.data.stardust)}</div></header>
+      <div class="mission-list">${dailyMissions(daily.day).map(m => {
+        const value = Math.floor(daily.progress[m.id]), claimed = daily.claimed.includes(m.id), ready = daily.progress[m.id] >= m.target
+        return `<article class="mission"><h3>${esc(this.t(`daily.${m.id}`))}</h3><p>${esc(this.t(`daily.${m.id}.desc`))}</p><label>${this.i18n.n(value)} / ${this.i18n.n(m.target)}<progress max="${m.target}" value="${value}"></progress></label><button class="btn ${ready && !claimed ? 'primary' : 'ghost'}" data-action="daily-claim" data-mission="${m.id}" ${!ready || claimed ? 'disabled' : ''}>${claimed ? esc(this.t('daily.claimed')) : `${esc(this.t('daily.claim'))} +${this.i18n.n(m.reward)}`}</button></article>`
+      }).join('')}</div><p class="gold">${esc(this.t('daily.badge'))} · ${daily.claimed.length}/5</p><footer><button class="btn ghost" data-action="back">${esc(this.t('common.back'))}</button></footer>`
+  }
+
+  private onCosmetic(id: string): void {
+    const item = COSMETICS.find(c => c.id === id)
+    if (!item) return
+    const owned = this.save.data.ownedCosmetics.includes(id)
+    if (!owned && item.achievement) { this.toast('economy.achievementOnly', {}, 'info'); return }
+    if (!owned && needsPurchaseConfirmation(item.price) && !window.confirm(this.t('economy.confirm', { name: this.t(`cosmetic.${id}`), price: this.i18n.n(item.price) }))) return
+    if (this.actions.cosmetic(id)) { this.audio.play(owned ? 'ui' : 'buy'); this.toast(owned ? 'economy.equipped' : 'economy.unlocked', {}, 'good') }
+    this.renderSkins(); this.refreshWallet(); this.applyCosmeticBackground()
+  }
+
+  private renderCollection(): void {
+    const d = this.save.data, el = this.root.querySelector<HTMLElement>('[data-bind="collection"]')!
+    el.innerHTML = `<h3>${esc(this.t('economy.collection'))}</h3><p>${esc(this.t('economy.collectionNote'))}</p><div class="collection-grid">${COSMETICS.map(c => {
+      const owned = d.ownedCosmetics.includes(c.id), achieved = achievementProgress(d, c)
+      const equipped = c.kind === 'head' ? d.headStyle === c.value : c.kind === 'color' ? d.color === c.value : d.cosmetics[c.kind] === c.id
+      const label = owned ? this.t(equipped ? 'skins.equipped' : 'skins.equip') : c.achievement ? this.t(`economy.achievement.${c.achievement}`, { n: c.target ?? 1 }) + ` · ${achieved}/${c.target}` : this.t('skins.buy', { n: this.i18n.n(c.price) })
+      return `<article class="collection-item ${owned ? 'owned' : 'unowned'}" style="--c:${c.color}"><span class="cosmetic-preview preview-${c.kind} ${c.kind === 'head' ? `head-${c.value}` : ''}" aria-hidden="true">${c.kind === 'badge' ? '♛' : c.kind === 'entry' || c.kind === 'victory' ? '✦' : ''}</span><small>${esc(this.t(`economy.kind.${c.kind}`))} · ${esc(this.t(owned ? 'economy.owned' : 'economy.unowned'))}</small><h4>${esc(this.t(`cosmetic.${c.id}`))}</h4><button class="btn small ${owned ? 'ghost' : 'primary'}" data-action="cosmetic" data-cosmetic="${c.id}" ${equipped || (!owned && (Boolean(c.achievement) || d.stardust < c.price)) ? 'disabled' : ''}>${esc(label)}</button></article>`
+    }).join('')}</div><div class="actions">${(['entry', 'victory', 'badge', 'background'] as const).filter(k => d.cosmetics[k]).map(k => `<button class="btn ghost small" data-action="cosmetic-clear" data-kind="${k}">${esc(this.t('economy.clear'))} · ${esc(this.t(`economy.kind.${k}`))}</button>`).join('')}</div>`
+  }
+
+  private applyCosmeticBackground(): void {
+    const d = this.save.data
+    document.body.dataset.cosmeticBackground = COSMETICS.find(c => c.id === d.cosmetics.background)?.value ?? ''
+    document.body.dataset.royalBadge = COSMETICS.find(c => c.id === d.cosmetics.badge)?.value ?? ''
+  }
+
+  cosmeticEffect(kind: 'entry' | 'victory'): void {
+    const item = COSMETICS.find(c => c.id === this.save.data.cosmetics[kind])
+    if (!item || this.reduced) return
+    const x = window.innerWidth / 2, y = window.innerHeight / 2
+    this.sparks.burst(x, y, item.color, kind === 'entry' ? 26 : 50, kind === 'entry' ? 250 : 380)
+    this.sparks.ring(x, y, item.color, kind === 'entry' ? 90 : 160)
+    if (item.value === 'prism' || item.value === 'aurora') this.sparks.burst(x, y, '#b9a8ff', 24, 310)
+  }
+
   private renderUpgrades(): void {
     const el = this.root.querySelector<HTMLElement>('[data-bind="upgrades"]')
     if (!el) return
@@ -658,6 +736,7 @@ export class Ui {
         <header><span class="upgrade-mark">${id.slice(0, 1).toUpperCase()}</span><div><h3>${t(`upgrade.${id}`)}</h3><p>${t(`upgrade.${id}.desc`)}</p></div></header>
         <div class="upgrade-level"><span>${t('upgradeLab.level', { n: level })}</span><i><em style="width:${level / def.maxLevel * 100}%"></em></i><b>${level}/${def.maxLevel}</b></div>
         <p class="upgrade-effect">${t(`upgrade.${id}.effect`, { n: level > 0 ? level : 1 })}</p>
+        <div class="upgrade-comparison"><small>${t('economy.current')} · ${esc(this.statLine(id, level))}</small><small>${t(maxed ? 'upgradeLab.maxed' : 'economy.next')} · ${esc(this.statLine(id, maxed ? level : level + 1))}</small></div>
         <button class="btn ${affordable ? 'primary' : 'ghost'}" data-action="buy-upgrade" data-upgrade="${id}" ${maxed || !affordable ? 'disabled' : ''}>${maxed ? status : `${icon('stardust')}${t('upgradeLab.buyFor', { n: this.i18n.n(price!) })}`}</button>
         <small class="upgrade-status ${affordable || maxed ? '' : 'locked'}">${status}</small>
       </article>`
@@ -679,9 +758,9 @@ export class Ui {
         ${Array.from({ length: 6 }, (_, i) => `<i class="preview-segment ${i === 5 ? `head-${d.headStyle}` : ''}" style="--c:${hexCss(i === 5 ? selected.head : selected.colors[i % selected.colors.length])}"></i>`).join('')}
       </div>
       <h3>${esc(this.t('skins.color'))}</h3>
-      <div class="cosmetic-options">${WORM_COLORS.map(c => `<button class="cosmetic color-choice" data-action="appearance-color" data-color="${c.id}" aria-pressed="${d.color === c.id}" style="--c:${hexCss(c.value ?? skinById(d.skin).head)}"><i></i><span>${esc(this.t(`color.${c.id}`))}</span></button>`).join('')}</div>
+      <div class="cosmetic-options">${WORM_COLORS.map(c => `<button class="cosmetic color-choice" data-action="appearance-color" data-color="${c.id}" aria-pressed="${d.color === c.id}" data-owned="${ownsAppearance(d, 'color', c.id)}" style="--c:${hexCss(c.value ?? skinById(d.skin).head)}"><i></i><span>${esc(this.t(`color.${c.id}`))}${ownsAppearance(d, 'color', c.id) ? '' : ` · ${esc(this.t('economy.locked'))}`}</span></button>`).join('')}</div>
       <h3>${esc(this.t('skins.head'))}</h3>
-      <div class="cosmetic-options heads">${HEAD_STYLES.map(head => `<button class="cosmetic head-choice" data-action="appearance-head" data-head="${head}" aria-pressed="${d.headStyle === head}" style="--c:${hexCss(selected.head)}"><i class="head-${head}"></i><span>${esc(this.t(`head.${head}`))}</span></button>`).join('')}</div>
+      <div class="cosmetic-options heads">${HEAD_STYLES.map(head => `<button class="cosmetic head-choice" data-action="appearance-head" data-head="${head}" aria-pressed="${d.headStyle === head}" data-owned="${ownsAppearance(d, 'head', head)}" style="--c:${hexCss(selected.head)}"><i class="head-${head}"></i><span>${esc(this.t(`head.${head}`))}${ownsAppearance(d, 'head', head) ? '' : ` · ${esc(this.t('economy.locked'))}`}</span></button>`).join('')}</div>
       <h3>${esc(this.t('skins.palette'))}</h3>`
     const el = this.root.querySelector<HTMLElement>('[data-bind="skins"]')!
     el.innerHTML = SKINS.map(s => {
@@ -699,6 +778,7 @@ export class Ui {
       return `<button class="skin ${equipped ? 'is-equipped' : ''} ${owned ? 'is-owned' : ''}" data-skin="${s.id}">
         <div class="swatch">${dots}</div><strong>${esc(this.t(`skin.${s.id}`))}</strong>${state}</button>`
     }).join('')
+    this.renderCollection()
   }
 
   private renderRecords(): void {
@@ -818,7 +898,7 @@ export class Ui {
         : `<p class="lobby-instruction">${this.t(this.lobbyTransport === 'peer' ? 'multiplayer.peerDescription' : 'multiplayer.description')}</p>
           <div class="lobby-create"><button class="btn primary" data-action="mp-create-blue">${this.t('multiplayer.createBlue')}</button><button class="btn primary red" data-action="mp-create-red">${this.t('multiplayer.createRed')}</button></div>
           <div class="lobby-join"><label>${this.t('multiplayer.roomLabel')}<input data-mp-room maxlength="8" autocomplete="off" placeholder="ABC123" /></label><div><button class="btn ghost" data-action="mp-join-blue">${this.t('multiplayer.joinBlue')}</button><button class="btn ghost" data-action="mp-join-red">${this.t('multiplayer.joinRed')}</button></div></div>`}
-      <p class="lobby-foot">${this.t('multiplayer.credit')}</p>
+      <p class="lobby-foot">${this.t('multiplayer.equalAbilities')}</p><p class="lobby-foot">${this.t('multiplayer.credit')}</p>
       <footer><button class="btn ghost" data-action="back">${this.t('common.back')}</button></footer>`
   }
 
@@ -1108,9 +1188,10 @@ export class Ui {
     })
     hud.querySelector('.chip-slow')!.classList.toggle('is-on', h.slowed)
     hud.querySelector('.chip-rim')!.classList.toggle('is-on', h.rimDanger > 0.3)
-    const abilityState: { kind: 'ghost' | 'electric' | 'bomb' | 'laser'; left: number; level: number }[] = [
+    const abilityState: { kind: 'ghost' | 'electric' | 'bomb' | 'laser' | 'shrink'; left: number; level: number }[] = [
       { kind: 'ghost', left: h.ghostLeft, level: h.upgradeLevels.ghost },
       { kind: 'electric', left: h.electricLeft, level: h.upgradeLevels.electric },
+      { kind: 'shrink', left: h.shrinkLeft, level: h.upgradeLevels.shrink },
       { kind: 'bomb', left: h.bombs?.next ?? 0, level: h.upgradeLevels.bomb },
       { kind: 'laser', left: h.laserUsed ? 0 : h.laserUnlocked ? 1 : 0, level: h.laserUnlocked ? 1 : 0 },
     ]
@@ -1118,14 +1199,15 @@ export class Ui {
       const button = hud.querySelector<HTMLButtonElement>(`.ability-${ability.kind}`)
       if (!button) continue
       const owned = ability.level > 0
-      const cooldown = ability.kind === 'ghost' ? h.ghostCooldown : 0
-      const laserBlocked = ability.kind === 'laser' && (game.isOnline || h.laserUsed)
-      button.disabled = !owned || cooldown > 0 || laserBlocked
+      const cooldown = ability.kind === 'ghost' ? h.ghostCooldown : ability.kind === 'electric' ? h.electricCooldown : ability.kind === 'shrink' ? h.shrinkCooldown : ability.kind === 'bomb' ? h.bombCooldown : 0
+      const laserBlocked = ability.kind === 'laser' && h.laserUsed
+      button.hidden = !owned
+      button.disabled = !owned || !game.playerAlive || cooldown > 0 || laserBlocked || (ability.left > 0 && ['ghost', 'electric', 'shrink'].includes(ability.kind)) || (ability.kind === 'bomb' && (h.bombs?.left ?? 0) >= (h.bombs?.limit ?? 1)) || (ability.kind === 'ghost' && h.electricLeft > 0) || (ability.kind === 'electric' && h.ghostLeft > 0)
       button.classList.toggle('is-owned', owned)
       const label = ability.kind === 'laser'
-        ? game.isOnline ? this.t('ability.localOnly') : h.laserUsed ? this.t('ability.used') : this.t('hud.abilityReady')
+        ? h.laserUsed ? this.t('ability.used') : this.t('hud.abilityReady')
         : ability.kind === 'bomb'
-        ? h.bombs ? `${h.bombs.left}/${h.bombs.limit}${h.bombs.next > 0 ? ` · ${Math.ceil(h.bombs.next)}s` : ''}` : '—'
+        ? h.bombs ? `${h.bombs.left}/${h.bombs.limit}${Number.isFinite(h.bombs.next) && h.bombs.next > 0 ? ` · ${this.t('common.seconds', { n: Math.ceil(h.bombs.next) })}` : ''}${cooldown > 0 ? ` · ${this.t('ability.cooldown', { n: Math.ceil(cooldown) })}` : ''}` : '—'
         : ability.left > 0 ? this.t('common.seconds', { n: Math.ceil(ability.left) }) : cooldown > 0 ? this.t('ability.cooldown', { n: Math.ceil(cooldown) }) : owned ? this.t('hud.abilityReady') : '—'
       button.querySelector('span')!.textContent = label
       button.classList.toggle('is-active', ability.left > 0 && ability.kind !== 'bomb' && ability.kind !== 'laser')
@@ -1300,7 +1382,16 @@ export class Ui {
     this.flashEl.classList.add('is-on')
   }
 
+  private dailyClock = 0
   frame(dt: number): void {
+    this.dailyClock += dt
+    if (this.dailyClock >= 1) {
+      this.dailyClock = 0
+      if (this.save.data.daily.day !== dailyDay()) {
+        this.save.update({ daily: sanitizeDaily(this.save.data.daily) })
+        if (this.screen === 'daily') this.renderDaily()
+      }
+    }
     this.sparks.reduced = this.reduced
     this.sparks.update(Math.min(0.05, dt))
     if (this.bannerTimer > 0) {

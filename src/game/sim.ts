@@ -14,7 +14,7 @@ import {
   type CelestialId, type PickupId,
 } from './content'
 import {
-  bombDamage, bombLifetime, bombLimit, electricDamage, electricDuration, emptyUpgradeLevels, ghostCooldown, ghostDuration,
+  bombCooldown, bombDamage, bombLifetime, bombLimit, electricCooldown, electricDamage, electricDuration, shrinkCooldown, emptyUpgradeLevels, ghostCooldown, ghostDuration,
   LASER_CONE, LASER_RANGE, sanitizeUpgradeLevels, shrinkDuration as upgradedShrinkDuration, shrinkReductionPercent, shrinkScale, type UpgradeLevels,
 } from './upgrades'
 import {
@@ -104,6 +104,10 @@ export type Worm = {
   ghostCooldownLeft: number
   electricLeft: number
   electricLevel: number
+  electricCooldownLeft: number
+  electricHitGrace: number
+  bombCooldownLeft: number
+  shrinkCooldownLeft: number
   shrinkReduction: number
   /** Feast combo: consecutive bites without a gap longer than CONFIG.feast.comboWindow. */
   combo: number
@@ -154,7 +158,7 @@ export type SimEvent =
   | { type: 'zoneWarning'; remaining: number }
   | { type: 'zoneEnd'; radius: number }
   | { type: 'shrinkEnd'; worm: Worm }
-  | { type: 'ability'; worm: Worm; kind: 'ghost' | 'electric' | 'bomb'; duration: number; x: number; z: number }
+  | { type: 'ability'; worm: Worm; kind: 'ghost' | 'electric' | 'bomb' | 'shrink'; duration: number; x: number; z: number }
   | { type: 'electricHit'; worm: Worm; attacker: Worm; damage: number; x: number; z: number }
   | { type: 'bombDetonate'; bomb: Bomb; target: Worm | null; damage: number; x: number; z: number }
   | { type: 'bombExpire'; bomb: Bomb; x: number; z: number }
@@ -162,7 +166,7 @@ export type SimEvent =
   | { type: 'trap'; worm: Worm; kind: TrapId; duration: number; resisted: boolean; x: number; z: number }
   | { type: 'trapEnd'; worm: Worm; kind: TimedTrapId }
 
-export type PlayerControl = { targetAngle: number | null; turn: number; boost: boolean; ghost?: boolean; electric?: boolean; bomb?: boolean; laser?: boolean }
+export type PlayerControl = { targetAngle: number | null; turn: number; boost: boolean; ghost?: boolean; electric?: boolean; bomb?: boolean; laser?: boolean; shrink?: boolean }
 
 const ORB_COLORS = [0x5ef3ff, 0xff5fc8, 0xffd24f, 0x7dffb0, 0xa98bff, 0xff8a5c]
 
@@ -236,7 +240,7 @@ export class Sim {
   traps: Trap[] = []
   bombs: Bomb[] = []
   readonly playerUpgrades: UpgradeLevels
-  readonly laserUnlocked: boolean
+  laserUnlocked: boolean
   laserUsed = false
   private zoneWarned = false
   private surpriseCooldown: number = SPECIALS.firstSurprise
@@ -361,7 +365,7 @@ export class Sim {
   private createWorm(name: string, isPlayer: boolean, team: number, skin: string): Worm {
     const w: Worm = {
       id: this.nextId++, name, isPlayer, team, skin, alive: false, xs: [], zs: [], kinds: [],
-      color: 'skin', headStyle: 'round', shrinkLeft: 0, ghostLeft: 0, ghostCooldownLeft: 0, electricLeft: 0, electricLevel: 0, shrinkReduction: 0,
+      color: 'skin', headStyle: 'round', shrinkLeft: 0, ghostLeft: 0, ghostCooldownLeft: 0, electricLeft: 0, electricLevel: 0, electricCooldownLeft: 0, electricHitGrace: 0, bombCooldownLeft: 0, shrinkCooldownLeft: 0, shrinkReduction: 0,
       traps: { freeze: 0, slow: 0, reverse: 0 }, trapGrace: 0,
       angle: 0, targetAngle: 0, turnAxis: 0, mass: CONFIG.worm.startLength, radius: radiusForLength(CONFIG.worm.startLength),
       boosting: false, wantBoost: false, dropTimer: 0, stacks: emptyStacks(), magnet: 0, shield: 0, freeBoost: 0,
@@ -405,7 +409,10 @@ export class Sim {
     const p = this.safeSpawnPoint(w.team)
     const toCenter = Math.atan2(-p.z, -p.x) + (this.random() - 0.5) * 1.2
     const startBase = this.campaignStage?.startLength ?? CONFIG.worm.startLength
-    const start = startBase + (w.isPlayer ? 0 : Math.floor(this.random() * 26))
+    // Competitive fairness: bots begin at exactly the same authored beginner length as the
+    // player and can grow only by using the shared food/boost rules. Campaign stages may still
+    // author a different common startLength for that stage.
+    const start = startBase
     w.alive = true
     w.mass = start
     w.radius = radiusForLength(start)
@@ -430,6 +437,10 @@ export class Sim {
     w.ghostCooldownLeft = 0
     w.electricLeft = 0
     w.electricLevel = 0
+    w.electricCooldownLeft = 0
+    w.electricHitGrace = 0
+    w.bombCooldownLeft = 0
+    w.shrinkCooldownLeft = 0
     w.shrinkReduction = 0
     w.traps = { freeze: 0, slow: 0, reverse: 0 }
     w.trapGrace = 0
@@ -620,6 +631,7 @@ export class Sim {
       if (control.electric) this.activateElectric(this.player)
       if (control.bomb) this.dropBomb(this.player)
       if (control.laser) this.useLaser(this.player)
+      if (control.shrink) this.activateShrink(this.player)
     }
     this.updateCrown()
     this.updateSpecials(dt)
@@ -669,10 +681,10 @@ export class Sim {
     return this.stage < this.stageThresholds.length ? this.stageThresholds[this.stage] : null
   }
 
-  /** Premium abilities are intentionally local-only and unavailable to network snapshots. */
+  /** Local activation; online authority uses the same balance math in Match. */
   activateGhost(w: Worm = this.player): boolean {
     const level = w.isPlayer ? Math.max(0, Math.floor(this.playerUpgrades.ghost)) : 0
-    if (!w.alive || level <= 0 || w.ghostLeft > 0 || w.ghostCooldownLeft > 0) return false
+    if (!w.alive || level <= 0 || w.ghostLeft > 0 || w.ghostCooldownLeft > 0 || w.electricLeft > 0) return false
     w.ghostLeft = ghostDuration(level)
     this.events.push({ type: 'ability', worm: w, kind: 'ghost', duration: w.ghostLeft, x: w.xs[0], z: w.zs[0] })
     return true
@@ -680,17 +692,29 @@ export class Sim {
 
   activateElectric(w: Worm = this.player): boolean {
     const level = w.isPlayer ? Math.max(0, Math.floor(this.playerUpgrades.electric)) : 0
-    if (!w.alive || level <= 0 || w.electricLeft > 0) return false
+    if (!w.alive || level <= 0 || w.electricLeft > 0 || w.electricCooldownLeft > 0 || w.ghostLeft > 0) return false
     w.electricLevel = level
+    w.electricCooldownLeft = electricDuration(level) + electricCooldown(level)
     w.electricLeft = electricDuration(level)
     this.events.push({ type: 'ability', worm: w, kind: 'electric', duration: w.electricLeft, x: w.xs[0], z: w.zs[0] })
+    return true
+  }
+
+  activateShrink(w: Worm = this.player): boolean {
+    const level = w.isPlayer ? this.playerUpgrades.shrink : 0
+    if (!w.alive || level <= 0 || w.shrinkLeft > 0 || w.shrinkCooldownLeft > 0) return false
+    w.shrinkLeft = upgradedShrinkDuration(level)
+    w.shrinkCooldownLeft = w.shrinkLeft + shrinkCooldown(level)
+    w.shrinkReduction = shrinkReductionPercent(level)
+    this.resize(w)
+    this.events.push({ type: 'ability', worm: w, kind: 'shrink', duration: w.shrinkLeft, x: w.xs[0], z: w.zs[0] })
     return true
   }
 
   dropBomb(w: Worm = this.player): boolean {
     const level = w.isPlayer ? Math.max(0, Math.floor(this.playerUpgrades.bomb)) : 0
     const active = this.bombs.filter(b => b.alive && b.ownerId === w.id).length
-    if (!w.alive || level <= 0 || active >= bombLimit(level)) return false
+    if (!w.alive || level <= 0 || active >= bombLimit(level) || w.bombCooldownLeft > 0) return false
     // Place it in front of the head, not at the tail. Coordinates are copied once and never
     // parented to the worm, so later movement cannot drag the bomb with the player.
     const ca = Math.cos(w.angle), sa = Math.sin(w.angle)
@@ -713,6 +737,7 @@ export class Sim {
       z *= k
     }
     const bomb: Bomb = { id: this.nextId++, ownerId: w.id, x, z, level, alive: true, expiresAt: this.time + bombLifetime(level) }
+    w.bombCooldownLeft = bombCooldown(level)
     this.bombs.push(bomb)
     this.events.push({ type: 'ability', worm: w, kind: 'bomb', duration: bombLifetime(level), x, z })
     return true
@@ -723,7 +748,7 @@ export class Sim {
     if (!w.alive || !w.isPlayer || !this.laserUnlocked || this.laserUsed) return false
     let best: { target: Worm; distance: number; angle: number } | null = null
     for (const target of this.worms) {
-      if (!target.alive || target === w || target.ghostLeft > 0) continue
+      if (!target.alive || target === w || target.ghostLeft > 0 || target.spawnGrace > 0) continue
       if (this.mode === 'team' && target.team === w.team) continue
       const dx = target.xs[0] - w.xs[0], dz = target.zs[0] - w.zs[0]
       const distance = Math.hypot(dx, dz)
@@ -926,7 +951,7 @@ export class Sim {
       if (!bomb.alive || bomb.expiresAt <= this.time) continue
       // A dropped bomb is a proximity hazard, not a head-only projectile: any enemy body
       // segment in the blast radius is a valid target, while the owner is always immune.
-      const target = this.worms.find(w => w.alive && w.id !== bomb.ownerId && w.xs.some((x, i) => Math.hypot(x - bomb.x, w.zs[i] - bomb.z) < w.radius + 2.6)) ?? null
+      const target = this.worms.find(w => w.alive && w.id !== bomb.ownerId && w.ghostLeft <= 0 && w.spawnGrace <= 0 && (this.mode !== 'team' || w.team !== this.worms.find(owner => owner.id === bomb.ownerId)?.team) && w.xs.some((x, i) => Math.hypot(x - bomb.x, w.zs[i] - bomb.z) < w.radius + 2.6)) ?? null
       if (!target) continue
       bomb.alive = false
       const damage = bombDamage(bomb.level)
@@ -1026,6 +1051,8 @@ export class Sim {
         if (d >= w.radius * 0.72 + o.radius * 0.82) return
         // Only the current crown holder (the king) can destroy an electrified worm.
         if (o !== w && o.electricLeft > 0 && this.crownId !== w.id) {
+          if (w.electricHitGrace > 0) return true
+          w.electricHitGrace = 0.65
           const damage = electricDamage(o.electricLevel)
           this.trimWorm(w, damage)
           this.events.push({ type: 'electricHit', worm: o, attacker: w, damage, x: hx, z: hz })
@@ -1362,6 +1389,10 @@ export class Sim {
       w.ghostLeft = Math.max(0, w.ghostLeft - dt)
       if (wasGhost > 0 && w.ghostLeft === 0) w.ghostCooldownLeft = ghostCooldown(w.isPlayer ? this.playerUpgrades.ghost : 0)
       w.ghostCooldownLeft = Math.max(0, w.ghostCooldownLeft - (wasGhost > 0 ? 0 : dt))
+      w.electricCooldownLeft = Math.max(0, w.electricCooldownLeft - dt)
+      w.electricHitGrace = Math.max(0, w.electricHitGrace - dt)
+      w.bombCooldownLeft = Math.max(0, w.bombCooldownLeft - dt)
+      w.shrinkCooldownLeft = Math.max(0, w.shrinkCooldownLeft - dt)
       w.electricLeft = Math.max(0, w.electricLeft - dt)
       if (w.electricLeft === 0) w.electricLevel = 0
       for (const kind of ['freeze', 'slow', 'reverse'] as const) {

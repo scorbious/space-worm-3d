@@ -1,0 +1,45 @@
+/* Additive progression UI: retain the existing nebula skin/rendering system. */
+.mission-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-block: 18px; }
+.mission { display: flex; flex-direction: column; gap: 10px; padding: 16px; border: 1px solid var(--line); border-radius: 14px; background: rgba(15, 14, 36, .8); }
+.mission h3, .mission p { margin: 0; }
+.mission p, .collection > p { color: var(--muted); font-size: 13px; line-height: 1.6; }
+.mission label { display: grid; gap: 6px; font-variant-numeric: tabular-nums; }
+.mission progress { width: 100%; height: 10px; accent-color: var(--cyan); }
+.mission .btn { margin-top: auto; }
+.mission .btn:disabled, .collection-item .btn:disabled { opacity: .5; cursor: not-allowed; }
+.upgrade-comparison { display: grid; gap: 6px; padding: 10px; border-radius: 9px; background: rgba(0, 0, 0, .22); font-variant-numeric: tabular-nums; line-height: 1.7; }
+.upgrade-comparison small:last-child { color: var(--cyan); }
+.collection { margin-top: 24px; padding-top: 16px; border-top: 1px solid var(--line); }
+.collection-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+.collection-item { display: flex; flex-direction: column; gap: 8px; padding: 14px; border: 1px solid color-mix(in srgb, var(--c) 25%, transparent); border-radius: 14px; background: linear-gradient(145deg, color-mix(in srgb, var(--c) 9%, #100c26), #0d0b20); }
+.collection-item h4 { margin: 0; font-size: 15px; }
+.collection-item small { color: var(--muted); line-height: 1.5; }
+.collection-item .btn { margin-top: auto; white-space: normal; font-size: 12px; line-height: 1.5; }
+.collection-item.owned { border-color: color-mix(in srgb, var(--c) 60%, transparent); }
+.cosmetic-preview { display: grid; place-items: center; width: 44px; height: 44px; border-radius: 50%; background: var(--c); color: #101025; box-shadow: 0 0 18px color-mix(in srgb, var(--c) 35%, transparent); font-size: 32px; }
+.preview-background { width: 100%; height: 44px; border-radius: 10px; background: radial-gradient(ellipse at 75% 20%, var(--c), transparent 65%), #09061b; }
+.preview-entry, .preview-victory { background: transparent; color: var(--c); }
+.cosmetic[data-owned="false"] { opacity: .65; border-style: dashed; }
+body[data-cosmetic-background="eclipse"] .screen.menu, body[data-cosmetic-background="eclipse"] .title-screen { background: radial-gradient(ellipse at 75% 15%, rgba(150, 91, 255, .25), transparent 60%), radial-gradient(circle at 15% 80%, rgba(230, 108, 62, .12), transparent 45%), rgba(5, 3, 17, .65); }
+body[data-cosmetic-background="aurora"] .screen.menu, body[data-cosmetic-background="aurora"] .title-screen { background: radial-gradient(ellipse at 20% 15%, rgba(85, 255, 176, .23), transparent 55%), radial-gradient(ellipse at 75% 70%, rgba(127, 100, 255, .25), transparent 60%), rgba(5, 3, 17, .65); }
+body[data-royal-badge]:not([data-royal-badge=""]) .title-best::after { content: ' ♛'; color: #ffd54f; text-shadow: 0 0 12px #ffc43f; }
+body[data-royal-badge="daily"] .title-best::after { content: ' ✦'; color: #7ff6ff; }
+body[data-royal-badge="royal"] .title-best::after { content: ' ♛♛'; }
+body[data-royal-badge]:not([data-royal-badge=""]) .crown-chip::after { content: ' ♛'; color: #ffd54f; }
+.ability-btn[hidden] { display: none !important; }
+.ability-shrink { --c: #f59aff; }
+.ability-btn:disabled.is-active, .ability-btn:disabled.is-cooldown { opacity: .8; filter: none; }
+@media (max-width: 768px), (pointer: coarse) {
+  .collection-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .mission-list { grid-template-columns: 1fr; }
+  .mission .btn, .collection .btn { min-height: 48px; }
+  .ability-buttons { display: flex; flex-wrap: wrap; justify-content: center; gap: 6px; touch-action: manipulation; max-width: 390px; margin-inline: auto; }
+  .ability-btn { flex: 0 1 auto; min-width: 64px; min-height: 56px; max-width: 110px; padding: 6px 8px; }
+  .ability-btn span { white-space: normal; overflow-wrap: anywhere; text-align: center; }
+  .has-touch .hud-bc { bottom: max(90px, calc(env(safe-area-inset-bottom) + 78px)); pointer-events: none; z-index: 10; max-width: calc(100vw - 24px); left: 50%; transform: translateX(-50%); }
+  .has-touch .ability-buttons { pointer-events: auto; position: relative; z-index: 15; }
+}
+@media (max-height: 500px) and (orientation: landscape) {
+  .has-touch .hud-bc { bottom: max(20px, env(safe-area-inset-bottom)); width: 48%; }
+  .ability-btn { min-width: 54px; min-height: 48px; font-size: 11px; }
+}

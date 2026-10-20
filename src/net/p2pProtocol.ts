@@ -7,7 +7,7 @@ export const SIGNAL_TTL_MS = 60000
 export const ROOM_TTL_MS = 24 * 60 * 60 * 1000
 export type PeerPresence = OnlineProfile & { peerId: string; uid: string; team: Team; joinedAt: number; seenAt: number; creator: boolean; ready: boolean }
 export type HostLease = { peerId: string; uid: string; epoch: number; expiresAt: number; roomExpiresAt: number; phase: 'waiting' | 'running' | 'ended' }
-export type PeerInput = { type: 'input'; protocol: typeof ONLINE_PROTOCOL; targetAngle: number; boost: boolean; seq: number }
+export type PeerInput = { type: 'input'; protocol: typeof ONLINE_PROTOCOL; targetAngle: number; boost: boolean; seq: number; abilities?: import('./multiplayer').AbilityId[] }
 export type PeerMessage =
   | { version: typeof PEER_PROTOCOL; epoch: number; kind: 'input'; payload: PeerInput }
   | { version: typeof PEER_PROTOCOL; epoch: number; kind: 'snapshot' | 'transfer'; payload: OnlineSnapshot }
@@ -55,8 +55,8 @@ export function proposeLease(current: HostLease | null, peers: PeerPresence[], s
     roomExpiresAt: current?.roomExpiresAt || now + ROOM_TTL_MS, phase: current?.phase || 'waiting' }
 }
 export function isPeerInput(v: unknown): v is PeerInput {
-  return obj(v) && keys(v, ['type', 'protocol', 'targetAngle', 'boost', 'seq']) && v.type === 'input' && v.protocol === ONLINE_PROTOCOL &&
-    finite(v.targetAngle) && Math.abs(v.targetAngle) <= Math.PI * 2 && typeof v.boost === 'boolean' && int(v.seq) && v.seq <= 0x7fffffff
+  return obj(v) && keys(v, ['type', 'protocol', 'targetAngle', 'boost', 'seq', 'abilities']) && v.type === 'input' && v.protocol === ONLINE_PROTOCOL &&
+    finite(v.targetAngle) && Math.abs(v.targetAngle) <= Math.PI * 2 && typeof v.boost === 'boolean' && int(v.seq) && v.seq <= 0x7fffffff && (v.abilities === undefined || (Array.isArray(v.abilities) && v.abilities.length <= 5 && new Set(v.abilities).size === v.abilities.length && v.abilities.every(a => ['ghost', 'electric', 'bomb', 'shrink', 'laser'].includes(a))))
 }
 export function isPeerMessage(v: unknown): v is PeerMessage {
   if (!obj(v) || !keys(v, ['version', 'epoch', 'kind', 'payload']) || v.version !== PEER_PROTOCOL || !int(v.epoch, 1)) return false

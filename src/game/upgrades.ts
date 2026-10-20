@@ -3,6 +3,7 @@
  * dependencies so prices, caps and combat numbers stay easy to test.
  */
 import { UPGRADE_IDS, type UpgradeId } from './content'
+import * as balance from '../../server/abilities.mjs'
 
 export type UpgradeLevels = Record<UpgradeId, number>
 /** Ten purchases make the shrink progression reach the advertised 10…100% range. */
@@ -10,8 +11,6 @@ export const MAX_UPGRADE_LEVEL = 10
 
 /** The destructive laser is a separate, one-shot campaign purchase. */
 export const LASER_PRICE = 250000
-export const LASER_RANGE = 72
-export const LASER_CONE = 0.52
 
 export type UpgradeDefinition = {
   id: UpgradeId
@@ -24,7 +23,7 @@ export type UpgradeDefinition = {
 
 export const UPGRADE_DEFS: Record<UpgradeId, UpgradeDefinition> = {
   ghost: { id: 'ghost', maxLevel: MAX_UPGRADE_LEVEL, basePrice: 2500, color: 0xb9a8ff },
-  electric: { id: 'electric', maxLevel: MAX_UPGRADE_LEVEL, basePrice: 1900, color: 0x63e7ff },
+  electric: { id: 'electric', maxLevel: MAX_UPGRADE_LEVEL, basePrice: 1900, color: 0xffe44f },
   shrink: { id: 'shrink', maxLevel: MAX_UPGRADE_LEVEL, basePrice: 1400, color: 0xf59aff },
   bomb: { id: 'bomb', maxLevel: MAX_UPGRADE_LEVEL, basePrice: 2200, color: 0xff805e },
 }
@@ -56,52 +55,20 @@ export function nextUpgradePrice(id: UpgradeId, currentLevel: number): number | 
   return level >= UPGRADE_DEFS[id].maxLevel ? null : upgradePrice(id, level + 1)
 }
 
-export function ghostDuration(level: number): number {
-  const n = Math.min(MAX_UPGRADE_LEVEL, Math.max(0, Math.floor(level)))
-  return n <= 0 ? 0 : 5 + (n - 1) * 0.9
-}
-
-/** Cooldown begins after the ghost window ends and scales with every duration upgrade. */
-export function ghostCooldown(level: number): number {
-  const duration = ghostDuration(level)
-  return duration <= 0 ? 0 : 15 + (duration - 5) * 3
-}
-
-export function electricDuration(level: number): number {
-  return level <= 0 ? 0 : 4 + Math.min(MAX_UPGRADE_LEVEL, level) * 0.85
-}
-
-/** Length removed from an attacker on an electric collision. */
-export function electricDamage(level: number): number {
-  return level <= 0 ? 0 : 3 + Math.min(MAX_UPGRADE_LEVEL, level) * 1.75
-}
-
-/** Percentage of the worm's current length removed by an upgraded shrink surprise. */
-export function shrinkReductionPercent(level: number): number {
-  return level <= 0 ? 0 : Math.min(100, Math.floor(level) * 10)
-}
-
-export function shrinkDuration(level: number): number {
-  return level <= 0 ? 12 : 12 + Math.min(MAX_UPGRADE_LEVEL, level) * 2
-}
-
-export function shrinkScale(level: number): number {
-  return level <= 0 ? 0.58 : Math.max(0.42, 0.58 - Math.min(MAX_UPGRADE_LEVEL, level) * 0.016)
-}
-
-export function bombLifetime(level: number): number {
-  const n = Math.min(MAX_UPGRADE_LEVEL, Math.max(0, Math.floor(level)))
-  return n <= 0 ? 0 : 5 + (n - 1) * 1.5
-}
-
-export function bombDamage(level: number): number {
-  return level <= 0 ? 0 : 4 + Math.min(MAX_UPGRADE_LEVEL, level) * 2.5
-}
-
-export function bombLimit(level: number): number {
-  return level <= 0 ? 0 : 1 + Math.floor((Math.min(MAX_UPGRADE_LEVEL, level) - 1) / 2)
-}
+export { ghostDuration, ghostCooldown, electricDuration, electricDamage, electricCooldown, bombLifetime, bombDamage, bombLimit, bombCooldown, shrinkDuration, shrinkCooldown, shrinkScale, shrinkReductionPercent, LASER_RANGE, LASER_CONE } from '../../server/abilities.mjs'
 
 export function hasUpgrade(levels: Partial<UpgradeLevels> | null | undefined, id: UpgradeId): boolean {
   return upgradeLevel(levels, id) > 0
+}
+
+export const needsPurchaseConfirmation = (price: number): boolean => price >= 10000
+export function upgradeStats(id: UpgradeId, level: number): { duration: number; damage: number; cooldown: number; count: number } {
+  const n = upgradeLevel({ [id]: level }, id)
+  const tidy = (v: number) => Math.round(v * 10) / 10
+  switch (id) {
+    case 'ghost': return { duration: tidy(balance.ghostDuration(n)), damage: 0, cooldown: tidy(balance.ghostCooldown(n)), count: n ? 1 : 0 }
+    case 'electric': return { duration: tidy(balance.electricDuration(n)), damage: tidy(balance.electricDamage(n)), cooldown: tidy(balance.electricCooldown(n)), count: n ? 1 : 0 }
+    case 'bomb': return { duration: tidy(balance.bombLifetime(n)), damage: tidy(balance.bombDamage(n)), cooldown: tidy(balance.bombCooldown(n)), count: balance.bombLimit(n) }
+    case 'shrink': return { duration: n ? balance.shrinkDuration(n) : 0, damage: 0, cooldown: balance.shrinkCooldown(n), count: n ? 1 : 0 }
+  }
 }

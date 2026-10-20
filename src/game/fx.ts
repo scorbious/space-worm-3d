@@ -23,9 +23,17 @@ export class Fx {
   reduced = false
   private rings: Ring[] = []
   private flashes: Flash[] = []
+  private beams: { mesh: THREE.Mesh<THREE.CylinderGeometry, THREE.MeshBasicMaterial>; left: number }[] = []
+  private beamDirection = new THREE.Vector3()
+  private beamUp = new THREE.Vector3(0, 1, 0)
   private c = new THREE.Color()
 
   constructor(private readonly p: Particles) {
+    const beamGeometry = new THREE.CylinderGeometry(0.16, 0.16, 1, 8)
+    for (let i = 0; i < 6; i++) {
+      const mesh = new THREE.Mesh(beamGeometry, new THREE.MeshBasicMaterial({ color: 0xff4d62, transparent: true, blending: THREE.AdditiveBlending, depthWrite: false }))
+      mesh.visible = false; mesh.renderOrder = 7; this.group.add(mesh); this.beams.push({ mesh, left: 0 })
+    }
     for (let i = 0; i < 14; i++) {
       const mat = shockwaveMaterial(0xffffff)
       const mesh = new THREE.Mesh(planeGeo, mat)
@@ -70,7 +78,19 @@ export class Fx {
     f.sprite.visible = true
   }
 
+  laser(x: number, z: number, tx: number, tz: number): void {
+    const beam = this.beams.find(b => b.left <= 0) ?? this.beams[0]
+    this.beamDirection.set(tx - x, 0, tz - z)
+    const length = this.beamDirection.length()
+    if (length <= 0.01) return
+    beam.mesh.position.set((x + tx) / 2, 0.8, (z + tz) / 2)
+    beam.mesh.quaternion.setFromUnitVectors(this.beamUp, this.beamDirection.normalize())
+    beam.mesh.scale.set(1, length, 1); beam.mesh.visible = true; beam.left = 0.32; beam.mesh.material.opacity = this.reduced ? 0.4 : 1
+    this.flash(tx, 0.8, tz, 0xff4d62, 8, 0.35); this.ring(tx, tz, 0xff4d62, 6, 0.45)
+  }
+
   update(dt: number): void {
+    for (const b of this.beams) { b.left = Math.max(0, b.left - dt); b.mesh.visible = b.left > 0; b.mesh.material.opacity = (this.reduced ? 0.4 : 1) * b.left / 0.32 }
     for (const r of this.rings) {
       if (!r.active) continue
       r.t += dt
@@ -97,6 +117,7 @@ export class Fx {
   }
 
   clear(): void {
+    for (const b of this.beams) { b.left = 0; b.mesh.visible = false }
     for (const r of this.rings) {
       r.active = false
       r.mesh.visible = false

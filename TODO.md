@@ -78,7 +78,7 @@
 - [x] Bomb: زر/اختصار يضع قنبلة خلف اللاعب، لها مدة ومؤقت وحد أقصى، وتقلل طول العدو دون قتله مباشرة.
 - [x] HUD للأوقات والقدرات وأزرار G/E/B، ومتجر Upgrade Lab بالعربية والإنجليزية ورسائل شراء/رفض.
 - [x] اختبارات الأسعار، الشراء، المهاجرة، الحدود والحسابات الأساسية.
-- [ ] مزامنة هذه القدرات داخل مباريات P2P/الخادم؛ النسخة الحالية تقصرها عمدًا على اللعب المحلي والحملة حتى لا تمنح أفضلية غير موثقة في اللعب الجماعي.
+- [x] مزامنة هذه القدرات داخل مباريات P2P/الخادم؛ النسخة الحالية تقصر الترقيات المحلية على اللعب المحلي والحملة، بينما يفرض الخادم/مضيف P2P عتاداً موحداً ويتحقق من النوايا والأحداث.
 
 التحقق: typecheck و186 اختبار Vitest وbuild وdiff-check ناجحة.
 
@@ -91,6 +91,27 @@
 - [x] تحسين تبدل البيئات والخلفيات الصافية حسب البيئة والمرحلة.
 - [x] تجميع مدد المفاجآت المتتالية مثل المغناطيس مع سقف أمان بدل إعادة ضبطها إلى 7 ثوانٍ كل مرة.
 - [x] ليزر مدمر باهظ، غير قابل للتطوير، متاح مرة واحدة في المباراة، يقتل هدفًا مباشرًا حتى الملك دون إصابة اللاعب نفسه، مع HUD ومؤثر واختصار L.
-- [ ] مزامنة هذه القدرات داخل النقل الجماعي authoritative/P2P؛ تبقى محلية والحملة حاليًا كما هو موضح في Upgrade Lab.
+- [x] مزامنة هذه القدرات داخل النقل الجماعي authoritative/P2P؛ تبقى مستويات الشراء المحلية خارج النقل ويستخدم اللعب الجماعي عتاداً موحداً.
 
 التحقق: typecheck و187 اختبار Vitest وbuild وdiff-check ناجحة.
+
+## 18. Fair abilities, daily missions and long-term rewards
+- [x] Synchronize Ghost/Electric/Bomb/Shrink/Laser intent through server and P2P host; validate levels/cooldowns/one-use, never client score/position/damage; synchronize authoritative ability events and fixed bomb timers. P2P remains best-effort rather than anti-cheat because the host is a browser.
+- [x] Local deterministic daily missions (3–5/day), UTC reset, persisted progress/one-time claims and Stardust/badge rewards; Arabic/English progress/claim UI from title. No training arena.
+- [x] Balance prices/durations/damage/cooldowns/counts; comparison before purchases and confirmation for expensive upgrades; laser stays expensive, one-use and non-upgradable.
+- [x] Tiered expensive cosmetic sinks: heads, colors, entry/victory effects, royal badges, rare backgrounds; owned/unowned/unlock and achievement-only rewards; preserve existing skins.
+- [x] Competitive bots start at beginner player length/radius/speed, including respawns; grow through shared food rules with behavioral difficulty only, no bonus length. Campaign stays separate.
+- [x] Mobile owned/authorized ability buttons with clear timers; preserve ar/en. Tests for daily reset/claims/economy/security/bot fairness; run typecheck/test/build/diff-check. No commit or push.
+
+## 18. المهام اليومية والاقتصاد العادل وتكافؤ المنافسة — أكتوبر 2026
+
+- [x] مهام يومية محلية حتمية حسب تاريخ UTC، خمس مهام تتبدل يوميًا، تقدم محفوظ، مطالبة مرة واحدة لكل مهمة، مكافآت Stardust وشارة عند إكمال المجموعة.
+- [x] واجهة المهام اليومية بالعربية والإنجليزية مع progress، زر claim، حالة claimed، وإخفاء/تجديد المهام عند اليوم التالي.
+- [x] تأكيد للمشتريات باهظة الثمن، مقارنة التأثير والسعر والمستوى، ومظاهر/ألوان/رؤوس/آثار/شارات وخلفيات قابلة للفتح بالعملات أو الإنجازات.
+- [x] مزامنة نوايا القدرات داخل الخادم authoritative وP2P host validation مع التحقق من cooldown وlaser one-shot والأحداث المرئية؛ لا يرسل العميل score أو damage أو position authoritative.
+- [x] ترتيب أزرار قدرات الهاتف وإظهار القدرات المملوكة فقط مع timers، دون إضافة ساحة تدريب.
+- [x] في وضع المنافسة يبدأ كل الأعداء بطول وسرعة ونصف قطر الدودة المبتدئة مثل اللاعب، وينمون بقواعد الطعام نفسها؛ لا توجد زيادة طول مخفية أو خصم كبير عند البداية.
+- [x] إبقاء صعوبة الحملة المصممة مسبقًا مستقلة عن تكافؤ المنافسة.
+- [ ] لا تزال عملات وترقيات اللاعب المحلية لا تحدد مستوى قدرته داخل online؛ يستخدم الخادم عتادًا موحدًا عادلًا، وP2P يبقى best-effort لأن المتصفح المضيف ليس anti-cheat كاملًا.
+
+التحقق: typecheck، 20 ملف اختبار و222 اختبارًا، multiplayer:test 18/18، build وdiff-check ناجحة.

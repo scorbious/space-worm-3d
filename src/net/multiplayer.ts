@@ -1,6 +1,9 @@
 import type { HeadStyle, WormColor } from '../game/appearance'
 import type { PeerClient } from './p2p'
 export const ONLINE_PROTOCOL = 'spaceworm-3v3-v2'
+export type AbilityId = 'ghost' | 'electric' | 'bomb' | 'shrink' | 'laser'
+export type OnlineAbilities = { levels: { ghost: number; electric: number; bomb: number; shrink: number }; laserUnlocked: boolean; laserUsed: boolean; ghostLeft: number; ghostCooldown: number; electricLeft: number; electricCooldown: number; shrinkLeft: number; shrinkCooldown: number; bombCooldown: number; hitGrace: number }
+export type OnlineBomb = { id: number; ownerId: string; x: number; z: number; level: number; left: number }
 export type MultiplayerTransport = 'peer' | 'server'
 export type Team = 'blue' | 'red'
 export type PlayerSeat = { id: string; slot: number; name: string; skin: string; ready: boolean; connected: boolean; host: boolean }
@@ -11,18 +14,21 @@ export type LobbyState = {
 }
 export type OnlinePlayer = {
   id: string; team: Team; slot: number; name: string; skin: string; color: WormColor; headStyle: HeadStyle
+  abilities?: OnlineAbilities
   connected: boolean; alive: boolean; xs: number[]; zs: number[]; angle: number; length: number; boosting: boolean
   score: number; kills: number; inputSeq: number; generation: number; respawnIn: number; spawnGrace: number
 }
 export type OnlineFood = { id: number; x: number; z: number; value: number; color: number }
 export type OnlineEvent = {
-  id: number; tick: number; type: 'eat' | 'death' | 'spawn' | 'stage' | 'end'; playerId?: string; killerId?: string | null
-  cause?: 'worm' | 'self' | 'rim' | 'head'; x?: number; z?: number; foodId?: number; value?: number; color?: number
+  id: number; tick: number; type: 'eat' | 'death' | 'spawn' | 'stage' | 'end' | 'ability' | 'electricHit' | 'bombDetonate' | 'bombExpire' | 'laserFire'; playerId?: string; killerId?: string | null
+  kind?: AbilityId; targetId?: string; bombId?: number; damage?: number; tx?: number; tz?: number
+  cause?: 'worm' | 'self' | 'rim' | 'head' | 'laser'; x?: number; z?: number; foodId?: number; value?: number; color?: number
   stage?: number; radius?: number; winner?: Team | 'draw'
 }
 export type OnlineSnapshot = {
   type: 'match' | 'matchEnd'; protocol: string; tick: number; seq: number; phase: 'running' | 'ended'; timeLeft: number
   arena: { stage: number; radius: number }; scores: { blue: number; red: number }
+  bombs?: OnlineBomb[]
   players: OnlinePlayer[]; food: OnlineFood[]; events: OnlineEvent[]; winner?: Team | 'draw'
 }
 export type OnlineMatchEnd = OnlineSnapshot & { type: 'matchEnd'; winner: Team | 'draw' }
@@ -54,6 +60,10 @@ export function isLobbyState(v: unknown): v is LobbyState {
     p === null || (object(p) && text(p.id) && text(p.name, 16) && text(p.skin) && integer(p.slot, 0, 2) &&
       typeof p.ready === 'boolean' && typeof p.connected === 'boolean' && typeof p.host === 'boolean')))
 }
+export function isOnlineAbilities(v: unknown): v is OnlineAbilities {
+  if (!object(v) || !object(v.levels) || !['ghost', 'electric', 'bomb', 'shrink'].every(id => v.levels && object(v.levels) && v.levels[id] === 1) || v.laserUnlocked !== true || typeof v.laserUsed !== 'boolean') return false
+  return ['ghostLeft', 'ghostCooldown', 'electricLeft', 'electricCooldown', 'shrinkLeft', 'shrinkCooldown', 'bombCooldown', 'hitGrace'].every(k => number(v[k], 0, 120))
+}
 export function isOnlineSnapshot(v: unknown): v is OnlineSnapshot {
   if (!object(v) || v.protocol !== ONLINE_PROTOCOL || !['match', 'matchEnd'].includes(String(v.type)) || !integer(v.tick) || !integer(v.seq) ||
       !['running', 'ended'].includes(String(v.phase)) || !number(v.timeLeft, 0, 600) || !object(v.arena) || !integer(v.arena.stage, 1, 5) ||
@@ -70,15 +80,20 @@ export function isOnlineSnapshot(v: unknown): v is OnlineSnapshot {
         !p.xs.every(x => number(x, -1024, 1024)) || !p.zs.every(z => number(z, -1024, 1024)) || !number(p.angle, -Math.PI - 0.01, Math.PI + 0.01) ||
         !number(p.score) || !integer(p.kills) || !integer(p.inputSeq, -1, 0x7fffffff) || !integer(p.generation, 1) ||
         !number(p.respawnIn, 0, 3) || !number(p.spawnGrace, 0, 2)) return false
+    if (p.abilities !== undefined && !isOnlineAbilities(p.abilities)) return false
     playerIds.add(p.id); return true
   })
+  if (v.bombs !== undefined && (!Array.isArray(v.bombs) || v.bombs.length > 18 || !v.bombs.every(b => object(b) && integer(b.id, 1) && text(b.ownerId) && playerIds.has(b.ownerId) && number(b.x, -512, 512) && number(b.z, -512, 512) && b.level === 1 && number(b.left, 0, 12)))) return false
   return validPlayers && v.food.every(f => object(f) && integer(f.id) && number(f.x, -512, 512) && number(f.z, -512, 512) &&
     integer(f.value, 1, 2) && integer(f.color, 0, 0xffffff)) && v.events.every(e => object(e) && integer(e.id, 1) && integer(e.tick) &&
-      ['eat', 'death', 'spawn', 'stage', 'end'].includes(String(e.type)) &&
+      ['eat', 'death', 'spawn', 'stage', 'end', 'ability', 'electricHit', 'bombDetonate', 'bombExpire', 'laserFire'].includes(String(e.type)) &&
       (e.playerId === undefined || text(e.playerId)) && (e.killerId == null || text(e.killerId)) &&
       (e.x === undefined || number(e.x, -1024, 1024)) && (e.z === undefined || number(e.z, -1024, 1024)) &&
       (e.color === undefined || integer(e.color, 0, 0xffffff)) && (e.value === undefined || integer(e.value, 1, 2)) &&
-      (e.cause === undefined || ['worm', 'self', 'rim', 'head'].includes(String(e.cause))))
+      (e.cause === undefined || ['worm', 'self', 'rim', 'head', 'laser'].includes(String(e.cause))) &&
+      (e.kind === undefined || ['ghost', 'electric', 'bomb', 'shrink', 'laser'].includes(String(e.kind))) &&
+      (e.targetId === undefined || text(e.targetId)) && (e.damage === undefined || number(e.damage, 0, 30)) &&
+      (e.bombId === undefined || integer(e.bombId, 1)) && (e.tx === undefined || number(e.tx, -1024, 1024)) && (e.tz === undefined || number(e.tz, -1024, 1024)))
 }
 
 export class MultiplayerClient {
@@ -100,6 +115,7 @@ export class MultiplayerClient {
   private lastSnapshotSeq = -1
   private inputSeq = 0
   private lastInputSent = -Infinity
+  private pendingAbilities = new Set<AbilityId>()
   private retries = 0
   private lostAt = 0
   private generation = 0
@@ -292,16 +308,19 @@ export class MultiplayerClient {
       else throw new Error('invalid_server_message')
     } catch (e) { this.callbacks.onStatus('error', (e as Error).message === 'protocol_mismatch' ? 'protocol_mismatch' : 'invalid_server_message') }
   }
-  sendInput(targetAngle: number, boost: boolean): void {
-    if (this.peer) { this.peer.sendInput(targetAngle, boost); return }
+  sendInput(targetAngle: number, boost: boolean, abilities: AbilityId[] = []): void {
+    if (this.peer) { this.peer.sendInput(targetAngle, boost, abilities); return }
+    if (this.isConnected) abilities.forEach(a => this.pendingAbilities.add(a))
     const now = performance.now()
     if (!this.playerId || !this.isConnected || now - this.lastInputSent < 50 || !Number.isFinite(targetAngle)) return
     this.lastInputSent = now
-    this.send({ type: 'input', targetAngle: Math.atan2(Math.sin(targetAngle), Math.cos(targetAngle)), boost, seq: this.inputSeq++ })
+    this.send({ type: 'input', targetAngle: Math.atan2(Math.sin(targetAngle), Math.cos(targetAngle)), boost, seq: this.inputSeq++, abilities: [...this.pendingAbilities] })
+    this.pendingAbilities.clear()
   }
   ready(value: boolean): void { if (this.peer) this.peer.ready(value); else this.send({ type: 'ready', value }) }
   start(): void { if (this.peer) this.peer.start(); else this.send({ type: 'start' }) }
   leave(): void {
+    this.pendingAbilities.clear()
     ++this.generation
     this.send({ type: 'leave' }); this.leaveConnection()
     try { sessionStorage.removeItem(tokenKey(this.room, this.team)) } catch { /* optional storage */ }
@@ -323,6 +342,7 @@ export class MultiplayerClient {
     this.peer?.close(); this.peer = null
   }
   private closeSocket(): void {
+    this.pendingAbilities.clear()
     window.clearTimeout(this.reconnectTimer); window.clearInterval(this.pingTimer); window.clearTimeout(this.connectTimer); this.pendingPing = 0
     const socket = this.socket; this.socket = null
     if (socket && socket.readyState < WebSocket.CLOSING) socket.close()

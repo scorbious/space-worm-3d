@@ -2,12 +2,14 @@
  * Versioned local save. Everything the player keeps between sessions lives in one JSON record so
  * it is easy to migrate. Corrupt or foreign data falls back to defaults instead of crashing.
  */
-import { SKINS } from '../game/content'
+import { SKINS, UPGRADE_IDS } from '../game/content'
 import { validColor, validHead, type HeadStyle, type WormColor } from '../game/appearance'
 import { emptyRecords, LOCAL_BOARD_SIZE, type LifeEntry, type Records } from '../game/rules'
 import { campaignStage, defaultCampaignProgress, type CampaignProgressData } from '../game/campaign'
 import { emptyUpgradeLevels, LASER_PRICE, nextUpgradePrice, sanitizeUpgradeLevels, upgradeLevel, type UpgradeLevels } from '../game/upgrades'
 import type { UpgradeId } from '../game/content'
+import { sanitizeDaily, emptyDaily, claimDaily, type DailyData, type DailyMetric } from '../game/daily'
+import { COSMETICS, emptyCosmeticEquipment, unlockAchievements, type CosmeticEquipment } from '../game/cosmetics'
 
 export type Locale = 'en' | 'ar'
 export const LOCALES: Locale[] = ['en', 'ar']
@@ -34,6 +36,10 @@ export type SaveData = {
   upgrades: UpgradeLevels
   /** One-time destructive laser unlock; it is intentionally not part of upgrade levels. */
   laserUnlocked: boolean
+  daily: DailyData
+  ownedCosmetics: string[]
+  cosmetics: CosmeticEquipment
+  achievements: { crowns: number; dailySets: number }
   ownedSkins: string[]
   skin: string
   /** Additive v1 migration: missing/invalid choices preserve the original appearance. */
@@ -67,6 +73,10 @@ export function defaultSave(): SaveData {
     stardust: 0,
     upgrades: emptyUpgradeLevels(),
     laserUnlocked: false,
+    daily: emptyDaily(),
+    ownedCosmetics: [],
+    cosmetics: emptyCosmeticEquipment(),
+    achievements: { crowns: 0, dailySets: 0 },
     ownedSkins: ['nebula'],
     skin: 'nebula',
     color: 'skin',
@@ -80,7 +90,7 @@ export function defaultSave(): SaveData {
 }
 
 const clamp01 = (v: unknown, fallback: number) => (typeof v === 'number' && Number.isFinite(v) ? Math.min(1, Math.max(0, v)) : fallback)
-const nonNegInt = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) && v > 0 ? Math.floor(v) : 0)
+const nonNegInt = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) && v > 0 ? Math.min(Number.MAX_SAFE_INTEGER, Math.floor(v)) : 0)
 
 export function sanitizeName(name: unknown, fallback = 'Stargazer'): string {
   if (typeof name !== 'string') return fallback
@@ -116,6 +126,18 @@ export function parseSave(raw: string | null): SaveData {
     }))
     .sort((a, b) => b.length - a.length || b.kills - a.kills || a.at - b.at)
     .slice(0, LOCAL_BOARD_SIZE)
+  const ownedCosmetics = Array.isArray(data.ownedCosmetics) ? [...new Set(data.ownedCosmetics.filter((id): id is string => typeof id === 'string' && COSMETICS.some(c => c.id === id)))] : []
+  // Grandfather the equipped appearance from saves predating the cosmetic catalog.
+  if (!Array.isArray(data.ownedCosmetics)) for (const c of COSMETICS) {
+    if ((c.kind === 'head' && c.value === data.headStyle) || (c.kind === 'color' && c.value === data.color)) ownedCosmetics.push(c.id)
+  }
+  const cosmetics = emptyCosmeticEquipment()
+  const equipment = data.cosmetics && typeof data.cosmetics === 'object' ? data.cosmetics as Record<string, unknown> : {}
+  for (const kind of Object.keys(cosmetics) as (keyof CosmeticEquipment)[]) {
+    const id = equipment[kind]
+    if (typeof id === 'string' && ownedCosmetics.includes(id) && COSMETICS.some(c => c.id === id && c.kind === kind)) cosmetics[kind] = id
+  }
+  const achievements = data.achievements && typeof data.achievements === 'object' ? data.achievements as Record<string, unknown> : {}
   const skin = typeof data.skin === 'string' && owned.includes(data.skin) ? data.skin : 'nebula'
   return {
     version: 2,
@@ -131,6 +153,9 @@ export function parseSave(raw: string | null): SaveData {
     stardust: nonNegInt(data.stardust),
     upgrades: sanitizeUpgradeLevels(data.upgrades),
     laserUnlocked: data.laserUnlocked === true,
+    daily: sanitizeDaily(data.daily),
+    ownedCosmetics, cosmetics,
+    achievements: { crowns: nonNegInt(achievements.crowns), dailySets: nonNegInt(achievements.dailySets) },
     ownedSkins: owned,
     skin,
     color: validColor(data.color),
@@ -178,12 +203,13 @@ export function parseCampaignProgress(raw: string | null): CampaignProgressData 
 /** Buy a skin if affordable; pure so it can be tested. */
 export function purchaseSkin(data: SaveData, skinId: string): SaveData | null {
   const skin = SKINS.find(s => s.id === skinId)
-  if (!skin || data.ownedSkins.includes(skinId) || data.stardust < skin.price) return null
+  if (!skin || !Number.isSafeInteger(data.stardust) || data.ownedSkins.includes(skinId) || data.stardust < skin.price) return null
   return { ...data, stardust: data.stardust - skin.price, ownedSkins: [...data.ownedSkins, skinId], skin: skinId }
 }
 
 /** Buy the next premium level only when the wallet can afford it; pure for unit tests. */
 export function purchaseUpgrade(data: SaveData, id: UpgradeId): SaveData | null {
+  if (!UPGRADE_IDS.includes(id) || !Number.isSafeInteger(data.stardust)) return null
   const current = upgradeLevel(data.upgrades, id)
   const price = nextUpgradePrice(id, current)
   if (price === null || data.stardust < price) return null
@@ -196,8 +222,14 @@ export function purchaseUpgrade(data: SaveData, id: UpgradeId): SaveData | null 
 
 /** Unlock the expensive one-shot laser once; unlike upgrades it has no levels. */
 export function purchaseLaser(data: SaveData): SaveData | null {
-  if (data.laserUnlocked || data.stardust < LASER_PRICE) return null
+  if (!Number.isSafeInteger(data.stardust) || data.laserUnlocked || data.stardust < LASER_PRICE) return null
   return { ...data, stardust: data.stardust - LASER_PRICE, laserUnlocked: true }
+}
+
+export function claimDailyReward(data: SaveData, id: DailyMetric, now = Date.now()): SaveData | null {
+  const claim = claimDaily(data.daily, id, now)
+  if (!claim || !Number.isSafeInteger(data.stardust + claim.reward)) return null
+  return unlockAchievements({ ...data, daily: claim.daily, stardust: data.stardust + claim.reward, achievements: { ...data.achievements, dailySets: data.achievements.dailySets + (claim.badge ? 1 : 0) } })
 }
 
 export class SaveStore {
@@ -209,7 +241,7 @@ export class SaveStore {
     } catch {
       raw = null
     }
-    this.data = parseSave(raw)
+    this.data = unlockAchievements(parseSave(raw))
   }
 
   update(patch: Partial<SaveData>): void {

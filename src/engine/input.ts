@@ -4,7 +4,7 @@
  *  - a relative turn axis (keyboard A/D or arrows),
  * plus a held boost flag. Gameplay reads `steer` and `boost`; it never checks raw events.
  */
-export type Action = 'boost' | 'pause' | 'confirm' | 'ghost' | 'electric' | 'bomb' | 'laser'
+export type Action = 'boost' | 'pause' | 'confirm' | 'ghost' | 'electric' | 'bomb' | 'laser' | 'shrink'
 export type InputMethod = 'mouse' | 'keyboard' | 'gamepad' | 'touch'
 
 export type Steer =
@@ -23,6 +23,7 @@ const KEYS = {
   electric: ['KeyE'],
   bomb: ['KeyB'],
   laser: ['KeyL'],
+  shrink: ['KeyR'],
 }
 
 export class Input {
@@ -56,6 +57,7 @@ export class Input {
         if (KEYS.electric.includes(e.code)) this.pressed_.add('electric')
         if (KEYS.bomb.includes(e.code)) this.pressed_.add('bomb')
         if (KEYS.laser.includes(e.code)) this.pressed_.add('laser')
+        if (KEYS.shrink.includes(e.code)) this.pressed_.add('shrink')
       }
       this.keys.add(e.code)
       if ([...KEYS.left, ...KEYS.right].includes(e.code)) {

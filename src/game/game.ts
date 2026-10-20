@@ -48,6 +48,7 @@ export type MatchResult = { scores: [number, number]; winner: 0 | 1 | -1; player
 export type FeedItem = { killer: string | null; victim: string; cause: DeathCause; involvesPlayer: boolean; playerKilled: boolean; team?: [number, number] }
 
 export type GameHooks = {
+  progress?(delta: Partial<Record<import('./daily').DailyMetric, number>>, crown?: boolean): void
   lifeStart(): void
   lifeEnd(result: LifeResult): void
   matchEnd(result: MatchResult): void
@@ -101,6 +102,9 @@ export type HudState = {
   ghostLeft: number
   ghostCooldown: number
   electricLeft: number
+  electricCooldown: number
+  bombCooldown: number
+  shrinkCooldown: number
   bombs: { left: number; limit: number; next: number } | null
   laserUnlocked: boolean
   laserUsed: boolean
@@ -129,7 +133,7 @@ export class Game {
   sim!: Sim
   readonly view = new View()
   private networkSim: NetworkSim | null = null
-  private sendOnlineInput: ((angle: number, boost: boolean) => void) | null = null
+  private sendOnlineInput: ((angle: number, boost: boolean, abilities: import('../net/multiplayer').AbilityId[]) => void) | null = null
   onlineControlsEnabled = true
   onlinePing = 0
   get isOnline(): boolean { return this.networkSim !== null }
@@ -223,7 +227,7 @@ export class Game {
     this.hooks.lifeStart()
   }
 
-  startOnline(snapshot: OnlineSnapshot, playerId: string, sendInput: (angle: number, boost: boolean) => void): void {
+  startOnline(snapshot: OnlineSnapshot, playerId: string, sendInput: (angle: number, boost: boolean, abilities: import('../net/multiplayer').AbilityId[]) => void): void {
     this.networkSim = new NetworkSim(playerId)
     this.sim = this.networkSim
     this.sendOnlineInput = sendInput
@@ -259,6 +263,13 @@ export class Game {
           this.focus = { x: e.x ?? worm.xs[0], z: e.z ?? worm.zs[0] }
           this.audio.play('death'); this.audio.setBoosting(false); this.hooks.flash('death')
         } else if (e.killerId === sim.localPlayerId) this.audio.play('kill')
+      } else if (e.type === 'ability' && mine) {
+        this.audio.play('power'); this.hooks.toast(`toast.ability.${e.kind}`, {}, 'power')
+      } else if (e.type === 'electricHit' || e.type === 'bombDetonate' || e.type === 'bombExpire') {
+        if (e.x !== undefined && e.z !== undefined && this.near(e.x, e.z)) this.view.fx.bite(e.x, e.z, e.type === 'electricHit' ? 0xffe44f : 0xff805e, 0, true)
+        if (e.targetId === sim.localPlayerId) { this.audio.play('bump'); this.hooks.flash('hit') }
+      } else if (e.type === 'laserFire' && e.x !== undefined && e.z !== undefined && e.tx !== undefined && e.tz !== undefined) {
+        this.view.fx.laser(e.x, e.z, e.tx, e.tz); this.audio.play('power')
       } else if (e.type === 'spawn' && mine) { this.lastTarget = null; this.input.clearBoost(); this.snapCamera() }
     }
     if (snapshot.phase === 'ended') { this.audio.setBoosting(false); this.audio.setScene('results') }
@@ -304,9 +315,14 @@ export class Game {
   }
 
   // ─── simulation ─────────────────────────────────────────────────────────
+  private dailySeconds = 0
   step(dt: number): void {
     if (this.networkSim) { this.stepOnline(dt); return }
     if (this.mode === 'paused') return
+    if (this.mode === 'playing' && this.sim.player.alive) {
+      this.dailySeconds += dt
+      if (this.dailySeconds >= 1) { const seconds = Math.floor(this.dailySeconds); this.dailySeconds -= seconds; this.hooks.progress?.({ seconds }) }
+    }
     const environmentDt = this.mode === 'playing' || this.mode === 'dead' ? dt : 0
     // Hit-stop: a few frames of slow motion sell big impacts.
     if (this.hitstop > 0) {
@@ -335,10 +351,11 @@ export class Game {
     this.networkSim.interpolate()
     const p = this.sim.player
     if (!p.isPlayer || !p.alive) return
-    const control = this.onlineControlsEnabled ? this.control() : { targetAngle: p.angle, turn: 0, boost: false }
+    const control: PlayerControl = this.onlineControlsEnabled ? this.control() : { targetAngle: p.angle, turn: 0, boost: false }
     // Aim ahead of the interpolated heading; the server still clamps the actual turn rate.
     const angle = control.targetAngle ?? p.angle + control.turn * 2.8 * Math.max(0.25, dt)
-    this.sendOnlineInput?.(angle, control.boost)
+    const abilities = (['ghost', 'electric', 'bomb', 'shrink', 'laser'] as const).filter(id => control[id])
+    this.sendOnlineInput?.(angle, control.boost, abilities)
   }
 
   private control(): PlayerControl {
@@ -369,6 +386,7 @@ export class Game {
       electric: this.input.consume('electric'),
       bomb: this.input.consume('bomb'),
       laser: this.input.consume('laser'),
+      shrink: this.input.consume('shrink'),
     }
   }
 
@@ -432,12 +450,14 @@ export class Game {
           } else if (this.near(e.x, e.z) && Math.random() < 0.3) fx.bite(e.x, e.z, e.color, 0, false)
           break
         case 'combo':
+          if (e.worm === P) this.hooks.progress?.({ coins: e.bonus })
           this.audio.play('combo', 1 + Math.min(0.4, e.combo / 250))
           this.hooks.callout('callout.combo', { n: e.combo, bonus: e.bonus }, e.combo >= 50 ? 3 : e.combo >= 25 ? 2 : 1)
           this.hooks.shard()
           break
         case 'shard':
           if (e.worm !== P) break
+          this.hooks.progress?.({ coins: 1 })
           this.audio.play('shard')
           fx.shard(e.x, e.z)
           this.hooks.shard()
@@ -481,6 +501,7 @@ export class Game {
         case 'crown':
           if (e.worm && this.near(e.worm.xs[0], e.worm.zs[0])) fx.crown(e.worm.xs[0], e.worm.zs[0])
           if (e.worm === P) {
+            this.hooks.progress?.({ royalty: 1 }, true)
             this.audio.play('crown')
             this.hooks.callout('callout.crownYou', {}, 3)
           }
@@ -507,6 +528,7 @@ export class Game {
             this.hooks.feed({ killer: e.killer?.name ?? null, victim: w.name, cause: e.cause, involvesPlayer: involves, playerKilled: w === P, team: e.killer ? [e.killer.team, w.team] : undefined })
           }
           if (e.killer === P) {
+            this.hooks.progress?.({ kills: 1 })
             this.audio.play('kill')
             fx.kill(e.x, e.z)
             this.hitstop = 0.1
@@ -620,6 +642,7 @@ export class Game {
           break
         case 'ability':
           if (e.worm === P) {
+            this.hooks.progress?.({ abilities: 1 })
             this.audio.play(e.kind === 'bomb' ? 'pickup' : 'power')
             this.hooks.toast(`toast.ability.${e.kind}`, { n: Math.ceil(e.duration) }, 'power')
           }
@@ -631,7 +654,12 @@ export class Game {
             this.hooks.toast('toast.electricHit', { n: e.damage }, 'bad')
           }
           break
+        case 'laserFire':
+          fx.laser(e.x, e.z, e.tx, e.tz)
+          if (e.worm === P) { this.hooks.progress?.({ abilities: 1 }); this.audio.play('power'); this.hooks.toast('toast.ability.laser', {}, 'power') }
+          break
         case 'bombDetonate':
+          if (this.near(e.x, e.z)) { fx.ring(e.x, e.z, 0xff805e, 7, 0.5); fx.flash(e.x, 0.7, e.z, 0xff805e, 6) }
           if (e.bomb.ownerId === P.id) {
             this.audio.play('shield')
             this.hooks.callout('callout.bomb', { n: e.damage }, 2)
@@ -872,10 +900,13 @@ export class Game {
       ghostLeft: P.alive ? P.ghostLeft : 0,
       ghostCooldown: P.alive ? P.ghostCooldownLeft : 0,
       electricLeft: P.alive ? P.electricLeft : 0,
+      electricCooldown: Math.max(0, P.electricCooldownLeft - P.electricLeft),
+      bombCooldown: P.bombCooldownLeft,
+      shrinkCooldown: Math.max(0, P.shrinkCooldownLeft - P.shrinkLeft),
       bombs: sim.playerUpgrades.bomb > 0 ? {
         left: sim.bombs.filter(b => b.alive && b.ownerId === P.id).length,
         limit: bombLimit(sim.playerUpgrades.bomb),
-        next: sim.bombs.filter(b => b.alive && b.ownerId === P.id).reduce((min, b) => Math.min(min, Math.max(0, b.expiresAt - sim.time)), 0),
+        next: sim.bombs.filter(b => b.alive && b.ownerId === P.id).reduce((min, b) => Math.min(min, Math.max(0, b.expiresAt - sim.time)), Infinity),
       } : null,
       upgradeLevels: { ...sim.playerUpgrades },
       laserUnlocked: sim.laserUnlocked,

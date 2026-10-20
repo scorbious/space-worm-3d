@@ -292,12 +292,15 @@ export class PeerClient {
     catch { c.channel.close() }
   }
   private broadcast(m: PeerMessage): void { this.connections.forEach(c => this.send(c, m)) }
-  sendInput(angle: number, boost: boolean): void {
+  private pendingAbilities = new Set<import('./multiplayer').AbilityId>()
+  sendInput(angle: number, boost: boolean, abilities: import('./multiplayer').AbilityId[] = []): void {
+    if (this.isConnected) abilities.forEach(a => this.pendingAbilities.add(a))
     const now = performance.now()
     if (!this.isConnected || !Number.isFinite(angle) || now - this.lastInputAt < 50) return
     this.lastInputAt = now
     const m: PeerMessage = { version: PEER_PROTOCOL, epoch: this.lease!.epoch, kind: 'input', payload: {
-      type: 'input', protocol: ONLINE_PROTOCOL, targetAngle: Math.atan2(Math.sin(angle), Math.cos(angle)), boost, seq: this.inputSeq++ } }
+      type: 'input', protocol: ONLINE_PROTOCOL, targetAngle: Math.atan2(Math.sin(angle), Math.cos(angle)), boost, seq: this.inputSeq++, abilities: [...this.pendingAbilities] } }
+    this.pendingAbilities.clear()
     if (this.isHost) this.simulation?.input(this.currentPlayerId, m.payload)
     else { const c = this.connections.get(this.lease!.peerId); if (c) this.send(c, m) }
   }
@@ -318,6 +321,7 @@ export class PeerClient {
     c.channel?.close(); c.pc.close(); c.assembler.clear()
   }
   close(): void {
+    this.pendingAbilities.clear()
     if (this.closed) return
     this.closed = true; clearInterval(this.loop)
     this.connections.forEach(c => this.drop(c)); this.connections.clear(); this.orphanCandidates.clear(); this.simulation = null

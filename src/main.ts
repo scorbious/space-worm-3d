@@ -1,11 +1,12 @@
 import './styles/main.css'
 import './styles/online.css'
+import './styles/progression.css'
 import { assets } from './engine/assets'
 import { Audio } from './engine/audio'
 import { I18n, resolveLocale } from './engine/i18n'
 import { Input } from './engine/input'
 import { GameLoop } from './engine/loop'
-import { CampaignStore, purchaseLaser, purchaseSkin, purchaseUpgrade, SAVE_KEY, SaveStore, type SaveData } from './engine/save'
+import { CampaignStore, claimDailyReward, purchaseLaser, purchaseSkin, purchaseUpgrade, SAVE_KEY, SaveStore, type SaveData } from './engine/save'
 import type { Game, LifeResult } from './game/game'
 import type { HintId } from './game/threats'
 import { applyLife, insertLife, stardustForLife, type CompetitiveRound, type Mode } from './game/rules'
@@ -13,6 +14,8 @@ import { campaignStage, completeCampaignStage, type CampaignStage, type Campaign
 import { tuning } from './game/tuning'
 import { TouchControls } from './ui/touch'
 import { Ui } from './ui/ui'
+import { advanceDaily } from './game/daily'
+import { equipCosmetic, purchaseCosmetic, unlockAchievements, ownsAppearance } from './game/cosmetics'
 import { MultiplayerClient } from './net/multiplayer'
 
 async function boot(): Promise<void> {
@@ -117,6 +120,8 @@ async function boot(): Promise<void> {
     },
     settings: patch => {
       const qualityChanged = patch.quality !== undefined && patch.quality !== save.data.quality
+      if (patch.color && !ownsAppearance(save.data, 'color', patch.color)) return
+      if (patch.headStyle && !ownsAppearance(save.data, 'head', patch.headStyle)) return
       save.update(patch)
       applySettings(save.data)
       if (patch.locale) i18n.set(patch.locale)
@@ -140,7 +145,24 @@ async function boot(): Promise<void> {
       save.replace(next)
       return true
     },
-    equipSkin: id => save.update({ skin: id }),
+    dailyClaim: id => {
+      const next = claimDailyReward(save.data, id)
+      if (!next) return false
+      save.replace(next)
+      return true
+    },
+    cosmetic: id => {
+      const owned = save.data.ownedCosmetics.includes(id)
+      const next = owned ? save.data : purchaseCosmetic(save.data, id)
+      if (!next) return false
+      const equipped = equipCosmetic(next, id)
+      if (!equipped) return false
+      save.replace(equipped); return true
+    },
+    clearCosmetic: kind => {
+      if (['entry', 'victory', 'badge', 'background'].includes(kind)) save.update({ cosmetics: { ...save.data.cosmetics, [kind]: '' } })
+    },
+    equipSkin: id => { if (save.data.ownedSkins.includes(id)) save.update({ skin: id }) },
     ability: kind => input.press(kind),
     campaign: (action, stageId) => {
       if (action === 'open') ui.show('campaign')
@@ -198,14 +220,14 @@ async function boot(): Promise<void> {
       if (!game.isOnline) {
         window.clearTimeout(deathTimer)
         tuning.activate('run')
-        game.startOnline(snapshot, network.currentPlayerId, (angle, boost) => network?.sendInput(angle, boost))
+        game.startOnline(snapshot, network.currentPlayerId, (angle, boost, abilities) => network?.sendInput(angle, boost, abilities))
         ui.show('hud'); audio.play('start')
       } else game.applyOnlineSnapshot(snapshot)
       ui.onlineSnapshotReady()
     },
     onMatchEnd: snapshot => {
       if (!game || !network) return
-      if (!game.isOnline) game.startOnline(snapshot, network.currentPlayerId, (angle, boost) => network?.sendInput(angle, boost))
+      if (!game.isOnline) game.startOnline(snapshot, network.currentPlayerId, (angle, boost, abilities) => network?.sendInput(angle, boost, abilities))
       else game.applyOnlineSnapshot(snapshot)
       ui.showOnlineMatch(snapshot)
       audio.setScene('results')
@@ -243,13 +265,15 @@ async function boot(): Promise<void> {
     const { records, newBests } = applyLife(save.data.records, r, earned)
     const entry = { name: save.data.playerName, length: r.peakLength, kills: r.kills, seconds: Math.floor(r.seconds), mode: r.mode, at: Date.now() }
     const { board, rank } = insertLife(save.data.lives, entry)
-    save.update({ stardust: save.data.stardust + earned, records, lives: board })
+    save.replace(unlockAchievements({ ...save.data, stardust: save.data.stardust + earned, records, lives: board }))
     return { earned, newBest: newBests.includes('bestLength') && records.lives > 1, localRank: rank }
   }
 
   game = new Game(renderer, input, audio, {
-    lifeStart: () => {
+    progress: (delta, crown) => {
+      save.replace(unlockAchievements({ ...save.data, daily: advanceDaily(save.data.daily, delta), achievements: { ...save.data.achievements, crowns: save.data.achievements.crowns + (crown ? 1 : 0) } }))
     },
+    lifeStart: () => { ui.cosmeticEffect('entry') },
     lifeEnd: result => {
       const info = recordLife(result)
       match.bestLife = Math.max(match.bestLife, result.peakLength)
@@ -267,10 +291,11 @@ async function boot(): Promise<void> {
     },
     matchEnd: result => {
       const r = save.data.records
-      save.update({ records: { ...r, teamMatches: r.teamMatches + 1, teamWins: r.teamWins + (result.winner === 0 ? 1 : 0) } })
+      save.replace(unlockAchievements({ ...save.data, daily: advanceDaily(save.data.daily, { royalty: result.winner === 0 ? 1 : 0 }), records: { ...r, teamMatches: r.teamMatches + 1, teamWins: r.teamWins + (result.winner === 0 ? 1 : 0) } }))
       deathTimer = window.setTimeout(() => {
         audio.setScene('results')
         ui.showMatch(result, match.bestLife, match.earned)
+        if (result.winner === 0) ui.cosmeticEffect('victory')
       }, 1300)
     },
     campaignClear: (stage, stats) => {
@@ -278,6 +303,7 @@ async function boot(): Promise<void> {
       campaign.replace(completed.data)
       if (completed.newlyCompleted) save.update({ stardust: save.data.stardust + stage.reward })
       ui.showCampaignResult(true, stage, stats, completed.newlyCompleted ? stage.reward : 0, completed.unlockedStage)
+      ui.cosmeticEffect('victory')
     },
     toast: (key, vars, tone) => ui.toast(key, vars, tone),
     celestial: (kind, added) => ui.celestial(kind, added),
